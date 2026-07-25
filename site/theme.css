@@ -1,0 +1,49 @@
+/* =====================================================================
+   nixshare / site / theme.css
+
+   Local theme for the hosted foss/v1 base. Retints the accent to orange;
+   nothing structural is touched — only the tokens listed as "safe to
+   override" in the design system's themes/README.md.
+
+   Load order (see index.html):
+     <link rel="stylesheet" href="https://v1.foss.design.corbet.ch/assets/base.css">
+     <link rel="stylesheet" href="./theme.css">
+
+   Contrast (WCAG 2.1, both directions checked):
+     dark  #fb923c on #0b1120 = 8.32:1   · #0b1120 on #fb923c = 8.32:1
+     light #9a3412 on #ffffff = 7.31:1   · #ffffff on #9a3412 = 7.31:1
+   ===================================================================== */
+
+:root {
+  --accent: #fb923c;
+  --accent-hover: #fdba74;
+  --accent-dim: rgba(251, 146, 60, 0.12);
+  --accent-glow: rgba(251, 146, 60, 0.08);
+  --accent-text: #0b1120;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --accent: #9a3412;
+    --accent-hover: #7c2d12;
+    --accent-dim: rgba(154, 52, 18, 0.08);
+    --accent-glow: rgba(154, 52, 18, 0.06);
+    --accent-text: #ffffff;
+  }
+}
+
+:root[data-theme="dark"] {
+  --accent: #fb923c;
+  --accent-hover: #fdba74;
+  --accent-dim: rgba(251, 146, 60, 0.12);
+  --accent-glow: rgba(251, 146, 60, 0.08);
+  --accent-text: #0b1120;
+}
+
+:root[data-theme="light"] {
+  --accent: #9a3412;
+  --accent-hover: #7c2d12;
+  --accent-dim: rgba(154, 52, 18, 0.08);
+  --accent-glow: rgba(154, 52, 18, 0.06);
+  --accent-text: #ffffff;
+}

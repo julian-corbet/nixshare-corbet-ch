@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+
+  <title>nixshare &mdash; declarative NFS/CIFS shares that unstick themselves</title>
+  <meta name="description" content="A NixOS module for NFS and CIFS shares: each share names its server as a peer instead of a hardcoded address, and a watchdog force-lazy-unmounts a stuck automount attempt before it wedges the session &mdash; not after. Server-side ZFS sharenfs/sharesmb exports included.">
+
+  <meta name="theme-color" content="#0b1120" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+
+  <meta property="og:title" content="nixshare">
+  <meta property="og:description" content="Declarative NFS/CIFS shares for NixOS. A share names a peer, not an address, and a watchdog force-unmounts a stuck mount attempt before it hangs your session.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://nixshare.corbet.ch">
+  <meta name="twitter:card" content="summary">
+
+  <link rel="stylesheet" href="https://v1.foss.design.corbet.ch/assets/base.css">
+  <link rel="stylesheet" href="./theme.css">
+</head>
+<body>
+
+<header class="hero">
+  <nav>
+    <a href="/" class="nav-brand">nixshare</a>
+    <div class="nav-links">
+      <a href="https://github.com/julian-corbet/nixshare-corbet-ch#readme">Docs</a>
+      <a href="https://github.com/julian-corbet/nixshare-corbet-ch">GitHub</a>
+      <a href="#install">Install</a>
+      <details class="nav-family">
+        <summary>nix* family</summary>
+        <nav class="nav-family-panel" aria-label="The nix* project family">
+          <a href="https://nixapps.corbet.ch">nixapps <span>cluster apps as typed Nix</span></a>
+          <a href="https://nixarch.corbet.ch">nixarch <span>Arch's AUR breadth, Nix's declarative config</span></a>
+          <a href="https://nixbackup.corbet.ch">nixbackup <span>verify the backup, not the exit code</span></a>
+          <a href="https://nixfish.corbet.ch">nixfish <span>your fish config as code</span></a>
+          <a href="https://nixgpu.corbet.ch">nixgpu <span>share one GPU by priority</span></a>
+          <a href="https://nixk3s.corbet.ch">nixk3s <span>the host is a flake, the cluster is git</span></a>
+          <a href="https://nixllm.corbet.ch">nixllm <span>the model store IS the registry</span></a>
+          <a href="https://nixnas.corbet.ch">nixnas <span>declarative NAS on a USB stick</span></a>
+          <a href="https://nixnet.corbet.ch">nixnet <span>the best live path to a host</span></a>
+          <a href="https://nixpush.corbet.ch">nixpush <span>one send call, any notification backend</span></a>
+          <a href="https://nixram.corbet.ch">nixram <span>RAM tuning that fits your machine</span></a>
+          <a href="https://nixremote.corbet.ch">nixremote <span>remote apps as real windows</span></a>
+          <a href="https://nixshare.corbet.ch" aria-current="page">nixshare <span>NFS/CIFS shares that unstick themselves</span></a>
+          <a href="https://nixvibe.corbet.ch">nixvibe <span>a coding agent in a browser terminal</span></a>
+          <a href="https://nixvps.corbet.ch">nixvps <span>NixOS on sub-1GB VPSes</span></a>
+        </nav>
+      </details>
+    </div>
+  </nav>
+
+  <div class="hero-content">
+    <h1>nixshare</h1>
+    <p class="tagline">A share names a peer, not an address &mdash; and gets out of the way when that peer dies.</p>
+    <p class="subtitle">Declarative NFS and CIFS shares for NixOS. The client side points each share at a named peer instead of a hardcoded address, so it inherits that name's own address failover. On top of that sits the piece nothing else covers: a watchdog that catches a mount attempt taking too long and force-lazy-unmounts it <em>before</em> it wedges your session, instead of leaving you to notice and reach for <code>sudo umount -f -l</code> yourself. The server side exports a ZFS <code>sharenfs</code>/<code>sharesmb</code> tree &mdash; kernel NFSv4 and Samba, both declarative.</p>
+    <div class="cta">
+      <a href="#install" class="btn btn-primary">Get started</a>
+      <a href="https://github.com/julian-corbet/nixshare-corbet-ch" class="btn btn-secondary">View on GitHub</a>
+    </div>
+  </div>
+
+  <div class="hero-demo">
+    <div class="terminal">
+      <div class="terminal-header">
+        <div class="terminal-dots"><span></span><span></span><span></span></div>
+        <span class="terminal-title">nixshare &mdash; a peer goes dark mid-mount</span>
+      </div>
+      <pre class="terminal-body"><code><span class="prompt">$</span> systemctl status nixshare-watchdog.timer
+<span class="output">● nixshare-watchdog.timer - Poll nixshare automounts for stuck establish attempts
+     Loaded: loaded
+     Active: active (waiting)</span>
+
+<span class="prompt">$</span> ls /mnt/example        <span class="output"># first access triggers the automount, transparently</span>
+
+<span class="prompt">$</span> journalctl -u nixshare-watchdog.service -n3
+<span class="output">nixshare-watchdog: share 'example' (/mnt/example, unit mnt-example.mount) has been activating for 31s (&gt;= 30s) -- force-lazy-unmounting
+nixshare-watchdog: umount -f -l /mnt/example succeeded
+nixshare-watchdog: ALERT: nixshare: force-unmounted stuck share 'example' at /mnt/example on example-host after 31s (threshold 30s)</span></code></pre>
+    </div>
+  </div>
+</header>
+
+<main>
+
+<section class="how-it-works">
+  <div class="container">
+    <h2>How it works</h2>
+    <div class="steps">
+      <div class="step">
+        <div class="step-num">1</div>
+        <h3>Declare a share against a peer</h3>
+        <p>A share is <code>protocol</code>, <code>peer</code>, <code>remotePath</code>, <code>mountpoint</code> and two timeouts. <code>peer</code> is a name, not an address &mdash; conventionally a <a href="https://nixnet.corbet.ch">nixnet</a> peer, so the share inherits LAN/overlay failover with zero address logic of nixshare's own. Any NSS-resolvable name works.</p>
+      </div>
+      <div class="step">
+        <div class="step-num">2</div>
+        <h3>A provider builds the units</h3>
+        <p>The <code>nfs</code> and <code>cifs</code> provider modules turn that one declaration into real <code>systemd.mounts</code> and <code>systemd.automounts</code>, each with its own protocol-appropriate mount options and a bounded <code>TimeoutSec=</code>. Core stays protocol-blind.</p>
+      </div>
+      <div class="step">
+        <div class="step-num">3</div>
+        <h3>The watchdog unsticks what hangs</h3>
+        <p>Every <code>pollIntervalSec</code>, a stateless oneshot asks systemd whether any share's unit has been <code>activating</code> longer than its <code>automountTimeoutSec</code>. If so: <code>umount -f -l</code>, immediately, plus an optional alert. No human, no <code>sudo</code>, no wedged session.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="features">
+  <div class="container">
+    <h2>What you get</h2>
+    <div class="feature-grid">
+      <div class="feature">
+        <h3>Force-unmount, not a kill signal</h3>
+        <p>A mount attempt stuck against a dead peer sits in an <em>uninterruptible</em> kernel wait &mdash; <code>SIGKILL</code> doesn't free it, which is why systemd's own <code>TimeoutSec=</code> isn't enough on its own. <code>umount -f -l</code> detaches the mountpoint at the VFS level regardless of what the blocked helper is still doing kernel-side.</p>
+      </div>
+      <div class="feature">
+        <h3>Proactive, not post-mortem</h3>
+        <p>The watchdog acts on an attempt that is still <em>in flight</em>, before the first <code>stat()</code> from a shell prompt or file manager joins it in D-state. That's the whole difference from the manual recovery it replaces.</p>
+      </div>
+      <div class="feature">
+        <h3>Zero address logic, permanently</h3>
+        <p>nixshare will never grow its own IP/hostname failover &mdash; that's an explicit non-goal. Pairing <code>peer</code> with <a href="https://nixnet.corbet.ch">nixnet</a> is what that field is <em>for</em>; nixshare only needs the name to already resolve.</p>
+      </div>
+      <div class="feature">
+        <h3>Both directions of the same schema</h3>
+        <p>Client mounts <em>and</em> server-side exports: <code>nfs-server-provider</code>/<code>cifs-server-provider</code> export a ZFS <code>sharenfs</code>/<code>sharesmb</code> tree matrix &mdash; kernel NFSv4 with idmapd and firewall scoping, Samba with usershares and wsdd/avahi discovery.</p>
+      </div>
+      <div class="feature">
+        <h3>Core + pluggable providers</h3>
+        <p>Core never learns what NFS or CIFS is. It renders one JSON file of <code>(name, mountpoint, timeout)</code> triples &mdash; the entire interface between Nix and the watchdog &mdash; and providers own their own mount-option surface. Adding a protocol never touches core.</p>
+      </div>
+      <div class="feature">
+        <h3>Alerts without a dependency</h3>
+        <p><code>watchdog.alertCommand</code> is a plain command prefix, filled from <a href="https://nixpush.corbet.ch">nixpush</a>'s <code>mkSendCommand</code> if you use it, or anything else. A failed alert never blocks or reverts a recovery &mdash; the unmount already happened.</p>
+      </div>
+      <div class="feature">
+        <h3>Credentials stay out of the store</h3>
+        <p><code>credentialsFile</code> is a runtime path to a <code>username=</code>/<code>password=</code> file &mdash; sops-nix, agenix, anything &mdash; handed to <code>mount.cifs</code> directly and never copied into the Nix store.</p>
+      </div>
+      <div class="feature">
+        <h3>Not NixOS-only</h3>
+        <p>The core and client providers touch nothing NixOS-exclusive, so the same files are exported as <code>systemManagerModules.*</code> for a non-NixOS Linux box under <a href="https://github.com/numtide/system-manager">system-manager</a>. The <code>systemd.mounts</code> surface there is flagged as unverified in <code>experiments/</code>, not silently assumed.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="architecture">
+  <div class="container">
+    <h2>Architecture</h2>
+    <pre class="arch-diagram"><code>services.nixshare.shares.&lt;name&gt;
+  protocol = "nfs" | "cifs"
+  peer     = "storage-host"      ← a name, never an address
+        │
+        ▼
+┌──────────────────────────────┐
+│ core   (protocol-blind)      │──► /etc/nixshare/watchdog.json
+│ schema + provider registry   │      (name, mountpoint, timeout)
+└──────────────┬───────────────┘                    │
+               │                                    ▼
+   ┌───────────┴───────────┐        ┌───────────────────────────────┐
+   │ nfs-provider          │        │ nixshare-watchdog.timer       │
+   │ cifs-provider         │        │ every pollIntervalSec:        │
+   └───────────┬───────────┘        │  unit activating too long?    │
+               │                    │   └─► umount -f -l  + alert   │
+               ▼                    └───────────────────────────────┘
+  systemd .mount / .automount
+               │
+               ▼
+   mount.nfs / mount.cifs  ──►  storage-host
+                                resolved by NSS — nixnet keeps the
+                                name pointed at a transport that works</code></pre>
+    <div class="arch-details">
+      <div class="arch-detail">
+        <h3>One JSON file is the whole Nix&rarr;runtime interface</h3>
+        <p>The watchdog reads <code>/etc/nixshare/watchdog.json</code> and nothing else. It carries no state between ticks, resolves each mountpoint to its unit with the real <code>systemd-escape</code> at runtime, and asks systemd fresh every time whether an attempt is in flight.</p>
+      </div>
+      <div class="arch-detail">
+        <h3>Root and unsandboxed, deliberately</h3>
+        <p><code>nixshare-watchdog.service</code> runs with no <code>Protect*</code>/<code>Private*</code> hardening on purpose: those directives work by giving a unit its own private mount namespace, which would silently turn every force-unmount into a no-op against the real, stuck session.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="install" class="install">
+  <div class="container">
+    <h2>Install</h2>
+    <div class="install-grid">
+      <div class="install-method">
+        <h3>1. Add the flake input</h3>
+        <pre><code>inputs.nixshare.url = "github:julian-corbet/nixshare-corbet-ch";</code></pre>
+        <p>Import <code>nixosModules.default</code> (core: schema + watchdog, zero providers) plus whichever providers you need &mdash; <code>nfs-provider</code>, <code>cifs-provider</code>, and their <code>*-server-provider</code> counterparts.</p>
+      </div>
+      <div class="install-method">
+        <h3>2. Declare a share</h3>
+        <pre><code>services.nixshare = {
+  enable = true;
+  shares.example = {
+    protocol = "nfs";
+    peer = "storage-host";
+    remotePath = "/export/example";
+    mountpoint = "/mnt/example";
+    cacheSettings.actimeo = "60";
+  };
+};</code></pre>
+      </div>
+      <div class="install-method">
+        <h3>Build from source</h3>
+        <pre><code>git clone https://github.com/julian-corbet/nixshare-corbet-ch
+cd nixshare-corbet-ch
+nix build .#nixshare-watchdog</code></pre>
+        <p>Needs only Nix with flakes enabled. <code>nix flake check</code> runs the same evaluation checks CI does.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="commands">
+  <div class="container">
+    <h2>Key options</h2>
+    <div class="table-scroll">
+      <table>
+        <tbody>
+          <tr><td><code>shares.&lt;name&gt;.peer</code></td><td>The server, by name &mdash; conventionally a <code>services.nixnet.peers.&lt;name&gt;</code> entry, but any NSS-resolvable name works.</td></tr>
+          <tr><td><code>shares.&lt;name&gt;.automountTimeoutSec</code></td><td>Per-share watchdog threshold, default <code>30</code>. Must exceed <code>establishTimeoutSec</code> (asserted).</td></tr>
+          <tr><td><code>establishTimeoutSec</code></td><td>Every provider's <code>.mount</code> unit <code>TimeoutSec=</code>, default <code>15</code>. Bounds a normal failure fast; does not by itself free a genuinely stuck attempt.</td></tr>
+          <tr><td><code>shares.&lt;name&gt;.cacheSettings</code></td><td>Freeform protocol-specific tuning, opaque to core. NFS: <code>nfsvers</code>, <code>timeo</code>, <code>retrans</code>, <code>actimeo</code>, <code>lookupcache</code>, <code>nconnect</code>, <code>fsc</code>. CIFS: <code>vers</code>, <code>cache</code>.</td></tr>
+          <tr><td><code>shares.&lt;name&gt;.credentialsFile</code></td><td>CIFS only &mdash; runtime path to a <code>username=</code>/<code>password=</code> file. Unset falls back to a <code>guest</code> mount.</td></tr>
+          <tr><td><code>watchdog.pollIntervalSec</code></td><td>How often the oneshot runs, default <code>10</code>.</td></tr>
+          <tr><td><code>watchdog.alertCommand</code></td><td>Command prefix run on every force-unmount, with a description of what happened appended.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer>
+  <div class="container">
+    <div class="footer-links">
+      <a href="https://github.com/julian-corbet/nixshare-corbet-ch#readme">Docs</a>
+      <a href="https://github.com/julian-corbet/nixshare-corbet-ch">Source</a>
+      <a href="https://github.com/julian-corbet/nixshare-corbet-ch/blob/main/CONTRIBUTING.md">Provider contract</a>
+      <a href="https://github.com/julian-corbet/nixshare-corbet-ch/tree/main/experiments">Experiments</a>
+      <a href="https://github.com/julian-corbet/nixshare-corbet-ch/issues">Issues</a>
+    </div>
+    <p>
+      <a href="https://github.com/julian-corbet/nixshare-corbet-ch/blob/main/LICENSE">MIT</a> &middot;
+      <a href="https://github.com/julian-corbet">Julian Corbet</a>
+    </p>
+  </div>
+</footer>
+
+</body>
+</html>
