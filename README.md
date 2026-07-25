@@ -1,11 +1,11 @@
 # nixshare
 
-Declarative NFS/CIFS share definitions — client side — whose server
-address resolves through a
-[nixnet](https://github.com/julian-corbet/nixnet-corbet-ch) peer name
-instead of a hardcoded IP, plus a watchdog that detects a stuck automount
+Declarative NFS/CIFS shares. The client side names its server as a
+[nixnet](https://github.com/julian-corbet/nixnet-corbet-ch) peer instead
+of a hardcoded address, plus a watchdog that detects a stuck automount
 attempt and force-unmounts it **before** it hangs the session, instead of
-after.
+after. The server side exports a ZFS `sharenfs`/`sharesmb`-carried tree
+matrix — kernel NFSv4 + Samba, both fully declarative.
 
 **The problem this solves:** a laptop with several NFS automounts, every
 one hardcoded to a single VPN-overlay address for its server. The overlay
@@ -290,16 +290,25 @@ same privilege level any ordinary `fstab`-driven mount runs at.
 | `CONTRIBUTING.md` | The provider contract, concretely |
 | `LICENSE` | MIT |
 
+## Server-side exports
+
+`nixosModules.nfs-server-provider` / `.cifs-server-provider`
+(`services.nixshare.server.nfs` / `.cifs`) export a ZFS `sharenfs`/
+`sharesmb`-carried tree matrix — kernel NFSv4 (idmapd Domain, firewall
+scoping, a reconcile oneshot) and Samba (usershares, wsdd/avahi
+discovery, the same reconcile pattern). Deliberately **not** the fancier
+unified `services.nixshare.exports.<name>` schema once speculated here as
+the "natural v2 shape" — these two providers are a direct relocation of a
+real, already-running production module, kept close to its original
+shape rather than redesigned, so a unified unmount/export schema
+generalizing across drastically different NFS/Samba option surfaces
+remains a possible future refinement, not something either provider
+commits to today. nixosModules-only: `services.nfs.server`/
+`services.samba`/`services.avahi`/`services.samba-wsdd` have no
+system-manager equivalent.
+
 ## Non-goals (v1)
 
-- **Server-side exports** (NFS `/etc/exports`, Samba `smb.conf` share
-  stanzas). Deliberately deferred — the incident this project fixes was
-  entirely client-side, and getting the client mount + watchdog mechanism
-  right and real mattered more than also covering the server side in the
-  same pass. A `services.nixshare.exports.<name>` (or similarly-shaped)
-  server-side schema is the natural v2 addition; the client-side schema
-  and JSON contracts here aren't expected to need to change to
-  accommodate it.
 - **A resident watchdog daemon.** The watchdog is a systemd timer +
   stateless oneshot, not a long-running process — see
   `pkgs/nixshare-watchdog.nix`'s own header comment for why that's
@@ -326,19 +335,23 @@ agnostic notification dispatch — nixshare's own intended pairing for
 watchdog alerts), and
 [nixram](https://github.com/julian-corbet/nixram-corbet-ch) (memory-
 pressure tuning by declared level), among others. nixshare's own niche is
-purely NFS/CIFS client-side share management plus stuck-automount
-recovery — usable alongside any of them, or standalone with a plain
-hostname/IP in `peer` and no alerting configured at all.
+NFS/CIFS share management, both directions — client mounts +
+stuck-automount recovery, and server-side exports — usable alongside any
+of them, or standalone with a plain hostname/IP in `peer` and no alerting
+configured at all.
 
 ## Status
 
-Fresh scaffold: the core schema, both providers, and the watchdog are
-implemented for real per the settled design — real `systemd.mounts`/
-`.automounts` generation, a real force-lazy-unmount watchdog with genuine
-stuck-attempt detection logic, not stubs — but nothing here has run
-against a real fleet yet. Server-side exports are a documented, deferred
-v2 item (see [Non-goals](#non-goals-v1)). `experiments/README.md` tracks
-every default and assumption that's reasoned, not yet measured, against a
+The core schema, all four providers (client nfs/cifs, server nfs/cifs),
+and the watchdog are implemented for real per the settled design — real
+`systemd.mounts`/`.automounts` generation, a real force-lazy-unmount
+watchdog with genuine stuck-attempt detection logic, real `services.nfs.server`/
+`services.samba` exports, not stubs. The server-side providers are a
+direct relocation of an already-running production module (see
+[Server-side exports](#server-side-exports)); the client-side providers
+have run against a real fleet since their own introduction.
+`experiments/README.md` tracks every default and assumption that's
+reasoned, not yet measured, against a
 real deployment.
 
 ## License
