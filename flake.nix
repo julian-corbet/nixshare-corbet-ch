@@ -31,6 +31,19 @@
       nixosModules.cifs-provider = ./modules/providers/cifs.nix;
 
       # ---------------------------------------------------------------
+      # Server side (README's documented "v2 addition"): NFS/CIFS
+      # EXPORTING, not just consuming. Genuinely full NixOS service
+      # modules (services.nfs.server, services.samba, services.avahi,
+      # services.samba-wsdd) with no system-manager equivalent -- these
+      # two are nixosModules-only, unlike the client-side providers
+      # above. Independent of services.nixshare.{shares,watchdog}/core.nix
+      # -- a host can serve without ever importing the client schema, and
+      # vice versa.
+      # ---------------------------------------------------------------
+      nixosModules.nfs-server-provider = ./modules/providers/nfs-server.nix;
+      nixosModules.cifs-server-provider = ./modules/providers/cifs-server.nix;
+
+      # ---------------------------------------------------------------
       # Same files, rendered onto system-manager's smaller option
       # surface instead of a real NixOS rebuild -- this is what
       # actually matters for nixshare's own motivating target: a
