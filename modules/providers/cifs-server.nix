@@ -158,6 +158,27 @@ in
     systemd.tmpfiles.rules = [ "d /var/lib/samba/usershares 1770 root root -" ];
     systemd.services.samba-smbd.unitConfig.RequiresMountsFor = [ "/var/lib/samba" ];
 
+    # Upstream OpenZFS ships zfs-share.service with `After=smb.service` -- the
+    # Red-Hat-style unit name. NixOS calls the daemon `samba-smbd.service`, so
+    # that directive names a unit which does not exist on NixOS and is silently
+    # INERT. `zfs share -a` therefore reaches the sharesmb datasets before smbd
+    # is listening and fails per dataset with "SMB share creation failed".
+    #
+    # The blast radius is bigger than it looks: that failure makes the whole
+    # unit exit 1, so the NFS exports zfs-share had ALREADY published in the
+    # same run go down WITH it -- a CIFS-side race takes NFS clients offline.
+    # Observed in production on a reboot: every NFS client took an I/O error
+    # until `systemctl restart zfs-share.service` was run by hand once boot had
+    # settled. Ordering it correctly makes the recovery automatic.
+    #
+    # Only meaningful when the caller actually uses ZFS-native sharesmb; on a
+    # host without zfs-share.service this override is inert but harmless (it
+    # defines ordering for a unit that simply never runs).
+    systemd.services.zfs-share = {
+      after = [ "samba-smbd.service" ];
+      wants = [ "samba-smbd.service" ];
+    };
+
     # Reconcile the caller's tree list onto the pool: set each SMB tree's
     # sharesmb, then share. Runs after smbd; idempotent + tolerant.
     systemd.services.smb-shares-apply = {
