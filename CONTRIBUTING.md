@@ -32,9 +32,9 @@ provider" means here, for anyone touching `modules/providers/`.
 A provider (`modules/providers/nfs.nix`, `modules/providers/cifs.nix`) is
 a NixOS/system-manager module that, in its `config` block:
 
-1. Filters `config.services.nixshare.shares` down to the entries matching
+1. Filters `config.nixshare.shares` down to the entries matching
    its own `protocol` value.
-2. Sets `services.nixshare.providers.<protocol>.enable = true` — this is
+2. Sets `nixshare.providers.<protocol>.enable = true` — this is
    what turns core's assertion ("this share's protocol has no provider
    imported") from a hard error into a pass; see `modules/core.nix`'s
    `providerEnabled` helper.

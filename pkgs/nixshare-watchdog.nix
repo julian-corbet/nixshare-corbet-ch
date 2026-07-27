@@ -50,7 +50,7 @@ writeShellApplication {
     config_file="''${NIXSHARE_WATCHDOG_CONFIG:-/etc/nixshare/watchdog.json}"
 
     if [ ! -r "$config_file" ]; then
-      echo "nixshare-watchdog: cannot read config: $config_file (is services.nixshare.enable set?)" >&2
+      echo "nixshare-watchdog: cannot read config: $config_file (is nixshare.enable set?)" >&2
       exit 1
     fi
 

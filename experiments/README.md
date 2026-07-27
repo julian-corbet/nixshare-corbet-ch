@@ -16,7 +16,7 @@ this code).
 
 ## 001 — is 30s the right default `automountTimeoutSec`?
 
-**Question:** `services.nixshare.shares.<name>.automountTimeoutSec`
+**Question:** `nixshare.shares.<name>.automountTimeoutSec`
 defaults to 30 (twice `establishTimeoutSec`'s own default of 15). Is that
 the right margin between "systemd's own per-attempt `TimeoutSec=` gives up"
 and "the watchdog concludes the attempt is actually stuck and force-unmounts
@@ -43,7 +43,7 @@ tuning, which only bounds RPC-level retries *after* a connection exists.
 
 ## 002 — is a 10s watchdog poll interval the right cadence?
 
-**Question:** `services.nixshare.watchdog.pollIntervalSec` defaults to 10.
+**Question:** `nixshare.watchdog.pollIntervalSec` defaults to 10.
 Against a 30s default `automountTimeoutSec`, that means a stuck mount is
 detected somewhere in a 20–30s window after crossing threshold, not
 immediately at the threshold instant. Tight enough, or should the poll

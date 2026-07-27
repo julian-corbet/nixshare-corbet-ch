@@ -18,7 +18,7 @@
 # nixosModules-only.
 { config, lib, ... }:
 let
-  cfg = config.services.nixshare.server.nfs;
+  cfg = config.nixshare.server.nfs;
 
   # `zfs set sharenfs=<v> <tree>` per share -- tolerant (a tree whose pool
   # is not yet imported, e.g. a data pool before its own unlock, keeps its
@@ -28,7 +28,7 @@ let
   ) cfg.sharenfs) + "\nzfs share -a || true\n";
 in
 {
-  options.services.nixshare.server.nfs = {
+  options.nixshare.server.nfs = {
     enable = lib.mkEnableOption "NFSv4 export of a ZFS-`sharenfs`-carried tree matrix";
 
     domain = lib.mkOption {
@@ -114,7 +114,7 @@ in
     # sharenfs property, then share. Runs after nfsd is up; idempotent +
     # tolerant (a not-yet-imported pool keeps its persisted property).
     systemd.services.nfs-shares-apply = {
-      description = "Apply the services.nixshare.server.nfs.sharenfs matrix onto the pool (self-describing NFS shares)";
+      description = "Apply the nixshare.server.nfs.sharenfs matrix onto the pool (self-describing NFS shares)";
       after = [ "nfs-server.service" "zfs-mount.service" ];
       requires = [ "nfs-server.service" ];
       wantedBy = [ "multi-user.target" ];

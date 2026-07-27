@@ -1,6 +1,6 @@
 # modules/core.nix
 #
-# nixshare's schema (services.nixshare.shares.<name>) plus the two
+# nixshare's schema (nixshare.shares.<name>) plus the two
 # protocol-agnostic supervisors: the stuck-automount `watchdog` (a mount
 # that never establishes) and the `health` monitor (a mount that
 # established fine and then degraded to seconds-per-RPC -- see
@@ -31,7 +31,7 @@
 with lib;
 
 let
-  cfg = config.services.nixshare;
+  cfg = config.nixshare;
 
   shareType = types.submodule {
     options = {
@@ -86,7 +86,7 @@ let
           has been in flight (systemd `ActiveState = activating`) for at
           least this long, the watchdog force-lazy-unmounts it and fires
           an alert rather than waiting for it to resolve on its own. Must
-          be greater than `services.nixshare.establishTimeoutSec`
+          be greater than `nixshare.establishTimeoutSec`
           (asserted below) -- otherwise the watchdog could fire on an
           attempt that's still within its own normal window, not one
           that's actually stuck. See `experiments/README.md` #001 for
@@ -146,7 +146,7 @@ let
   # Provider registry (nixpush's `providers`/`providerDefaults` pattern,
   # adapted to a closed two-value enum instead of an open attrsOf
   # package): each provider module sets
-  # `services.nixshare.providers.<protocol>.enable = true` in its own
+  # `nixshare.providers.<protocol>.enable = true` in its own
   # `config` block when imported+enabled. Core never imports a provider
   # and never contains protocol-specific code -- it only reads this
   # registry back, in the assertion below, to catch "protocol declared,
@@ -234,7 +234,7 @@ let
 
 in
 {
-  options.services.nixshare = {
+  options.nixshare = {
     enable = mkEnableOption "nixshare declarative NFS/CIFS shares, with a stuck-automount watchdog and a degraded-mount health monitor";
 
     establishTimeoutSec = mkOption {
@@ -411,7 +411,7 @@ in
       alertCommand = mkOption {
         type = types.nullOr types.str;
         default = cfg.watchdog.alertCommand;
-        defaultText = literalExpression "config.services.nixshare.watchdog.alertCommand";
+        defaultText = literalExpression "config.nixshare.watchdog.alertCommand";
         description = "Alert command, same contract as the watchdog's; defaults to whatever the watchdog already uses so a host configures notification once.";
       };
 
@@ -448,7 +448,7 @@ in
         in [{
           assertion = length mountpoints == length (unique mountpoints);
           message = ''
-            services.nixshare.shares has two different shares declaring the
+            nixshare.shares has two different shares declaring the
             same mountpoint -- two systemd automount units racing to own
             the same path is exactly the kind of failure nixshare exists
             to prevent, not reproduce. Give each share its own mountpoint.
@@ -459,7 +459,7 @@ in
         (name: s: {
           assertion = providerEnabled s.protocol;
           message = ''
-            services.nixshare.shares.${name}.protocol is "${s.protocol}",
+            nixshare.shares.${name}.protocol is "${s.protocol}",
             but no matching provider module is imported/enabled. Import
             nixosModules.${s.protocol}-provider (or
             systemManagerModules.${s.protocol}-provider on a
@@ -476,9 +476,9 @@ in
         (name: s: {
           assertion = s.automountTimeoutSec > cfg.establishTimeoutSec;
           message = ''
-            services.nixshare.shares.${name}.automountTimeoutSec
+            nixshare.shares.${name}.automountTimeoutSec
             (${toString s.automountTimeoutSec}s) must be greater than
-            services.nixshare.establishTimeoutSec
+            nixshare.establishTimeoutSec
             (${toString cfg.establishTimeoutSec}s) -- otherwise the
             watchdog could force-unmount an attempt that's still within
             its own normal establish window, not one that's actually stuck.

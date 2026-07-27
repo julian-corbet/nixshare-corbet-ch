@@ -3,3 +3,6 @@ result-*
 
 # Cloudflare wrangler local cache (holds account id + name — never commit)
 .wrangler/
+
+# Claude Code workflow artifacts (worktrees, local agent state)
+.claude/

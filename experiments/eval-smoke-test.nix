@@ -12,7 +12,7 @@ let
       ../modules/providers/nfs.nix
       ../modules/providers/cifs.nix
       {
-        services.nixshare = {
+        nixshare = {
           enable = true;
           watchdog.alertCommand = "echo alert:";
           shares.example = {

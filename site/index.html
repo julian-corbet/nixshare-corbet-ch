@@ -150,7 +150,7 @@ nixshare-watchdog: ALERT: nixshare: force-unmounted stuck share 'example' at /mn
 <section class="architecture">
   <div class="container">
     <h2>Architecture</h2>
-    <pre class="arch-diagram"><code>services.nixshare.shares.&lt;name&gt;
+    <pre class="arch-diagram"><code>nixshare.shares.&lt;name&gt;
   protocol = "nfs" | "cifs"
   peer     = "storage-host"      ← a name, never an address
         │
@@ -196,7 +196,7 @@ nixshare-watchdog: ALERT: nixshare: force-unmounted stuck share 'example' at /mn
       </div>
       <div class="install-method">
         <h3>2. Declare a share</h3>
-        <pre><code>services.nixshare = {
+        <pre><code>nixshare = {
   enable = true;
   shares.example = {
     protocol = "nfs";

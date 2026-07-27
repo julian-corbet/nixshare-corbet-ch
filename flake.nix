@@ -16,7 +16,7 @@
     in
     {
       # ---------------------------------------------------------------
-      # Core: services.nixshare.{shares,watchdog} schema + the
+      # Core: nixshare.{shares,watchdog} schema + the
       # protocol-agnostic watchdog timer/oneshot. Declares NO
       # systemd.mounts/automounts itself -- that's each provider's job
       # (see modules/providers/{nfs,cifs}.nix), since NFS and CIFS mount
@@ -36,7 +36,7 @@
       # modules (services.nfs.server, services.samba, services.avahi,
       # services.samba-wsdd) with no system-manager equivalent -- these
       # two are nixosModules-only, unlike the client-side providers
-      # above. Independent of services.nixshare.{shares,watchdog}/core.nix
+      # above. Independent of nixshare.{shares,watchdog}/core.nix
       # -- a host can serve without ever importing the client schema, and
       # vice versa.
       # ---------------------------------------------------------------

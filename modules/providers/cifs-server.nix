@@ -21,7 +21,7 @@
 # provider is nixosModules-only.
 { config, lib, pkgs, ... }:
 let
-  cfg = config.services.nixshare.server.cifs;
+  cfg = config.nixshare.server.cifs;
 
   # Set each SMB tree sharesmb=on, then turn OFF every descendant
   # dataset. sharesmb INHERITS down the tree, so a bare `set on` makes
@@ -41,7 +41,7 @@ let
   '';
 in
 {
-  options.services.nixshare.server.cifs = {
+  options.nixshare.server.cifs = {
     enable = lib.mkEnableOption "Samba SMB file shares (ZFS sharesmb / usershares)";
 
     sharesmb = lib.mkOption {
@@ -182,7 +182,7 @@ in
     # Reconcile the caller's tree list onto the pool: set each SMB tree's
     # sharesmb, then share. Runs after smbd; idempotent + tolerant.
     systemd.services.smb-shares-apply = {
-      description = "Apply the services.nixshare.server.cifs.sharesmb list onto the pool (self-describing SMB shares)";
+      description = "Apply the nixshare.server.cifs.sharesmb list onto the pool (self-describing SMB shares)";
       after = [ "samba-smbd.service" "zfs-mount.service" ];
       wantedBy = [ "multi-user.target" ];
       serviceConfig = { Type = "oneshot"; RemainAfterExit = true; };

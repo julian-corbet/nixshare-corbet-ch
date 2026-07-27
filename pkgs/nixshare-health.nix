@@ -68,7 +68,7 @@ writeShellApplication {
     config_file="''${NIXSHARE_HEALTH_CONFIG:-/etc/nixshare/health.json}"
 
     if [ ! -r "$config_file" ]; then
-      echo "nixshare-health: cannot read config: $config_file (is services.nixshare.health.enable set?)" >&2
+      echo "nixshare-health: cannot read config: $config_file (is nixshare.health.enable set?)" >&2
       exit 1
     fi
 

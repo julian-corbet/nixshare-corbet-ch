@@ -1,6 +1,6 @@
 # modules/providers/nfs.nix
 #
-# The NFS backend: turns every `services.nixshare.shares.<name>` with
+# The NFS backend: turns every `nixshare.shares.<name>` with
 # `protocol = "nfs"` into a real `systemd.mounts` + `systemd.automounts`
 # pair. Never imported by core.nix itself -- opt in alongside it, same
 # shape as nixnet's provider modules. Shared verbatim between
@@ -10,7 +10,7 @@
 with lib;
 
 let
-  cfg = config.services.nixshare;
+  cfg = config.nixshare;
 
   nfsShares = filterAttrs (_: s: s.protocol == "nfs") cfg.shares;
 
@@ -46,7 +46,7 @@ let
 in
 {
   config = mkIf (cfg.enable && nfsShares != { }) {
-    services.nixshare.providers.nfs.enable = true;
+    nixshare.providers.nfs.enable = true;
 
     systemd.mounts = mapAttrsToList
       (_: s: {

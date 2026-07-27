@@ -52,7 +52,7 @@ is wedged and reach for `sudo umount -f -l` themselves.
 
 ```nix
 # configuration.nix
-services.nixshare = {
+nixshare = {
   enable = true;
 
   # Optional: wire force-unmount alerts through nixpush. Requires
@@ -193,7 +193,7 @@ The trigger was a metadata storm against the mount (a recursive `chown` over
 a git object store — ~10⁵ failing per-file operations). It never recovered
 on its own.
 
-`services.nixshare.health` probes each **already-established** mount on a
+`nixshare.health` probes each **already-established** mount on a
 timer, and escalates only on a sustained stall:
 
 1. **Probe** — one `stat()` per mounted share, hard-bounded by
@@ -249,7 +249,7 @@ them would have made recovery impossible while looking like it ran.
 
 ## Options
 
-`services.nixshare.*` (core — [modules/core.nix](modules/core.nix)):
+`nixshare.*` (core — [modules/core.nix](modules/core.nix)):
 
 - `enable` — turn nixshare on: renders `/etc/nixshare/watchdog.json` and
   starts the watchdog timer.
@@ -282,7 +282,7 @@ them would have made recovery impossible while looking like it ran.
   message to and runs on every force-unmount; intended to be filled from
   nixpush's `mkSendCommand` (see Quickstart), not a hard dependency.
 
-`services.nixshare.providers.*` — internal registry, set by provider
+`nixshare.providers.*` — internal registry, set by provider
 modules, not meant to be set directly.
 
 `modules/providers/nfs.nix` — recognized `cacheSettings` keys: `nfsvers`
@@ -322,7 +322,7 @@ imports = [
   inputs.nixshare.systemManagerModules.core
   inputs.nixshare.systemManagerModules.nfs-provider
 ];
-services.nixshare.enable = true;
+nixshare.enable = true;
 # ... same options as above
 ```
 
@@ -371,11 +371,11 @@ same privilege level any ordinary `fstab`-driven mount runs at.
 ## Server-side exports
 
 `nixosModules.nfs-server-provider` / `.cifs-server-provider`
-(`services.nixshare.server.nfs` / `.cifs`) export a ZFS `sharenfs`/
+(`nixshare.server.nfs` / `.cifs`) export a ZFS `sharenfs`/
 `sharesmb`-carried tree matrix — kernel NFSv4 (idmapd Domain, firewall
 scoping, a reconcile oneshot) and Samba (usershares, wsdd/avahi
 discovery, the same reconcile pattern). Deliberately **not** the fancier
-unified `services.nixshare.exports.<name>` schema once speculated here as
+unified `nixshare.exports.<name>` schema once speculated here as
 the "natural v2 shape" — these two providers are a direct relocation of a
 real, already-running production module, kept close to its original
 shape rather than redesigned, so a unified unmount/export schema

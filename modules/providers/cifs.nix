@@ -1,6 +1,6 @@
 # modules/providers/cifs.nix
 #
-# The CIFS/SMB backend: turns every `services.nixshare.shares.<name>`
+# The CIFS/SMB backend: turns every `nixshare.shares.<name>`
 # with `protocol = "cifs"` into a real `systemd.mounts` + `systemd.automounts`
 # pair. Never imported by core.nix itself -- opt in alongside it, same
 # shape as modules/providers/nfs.nix. Shared verbatim between
@@ -10,7 +10,7 @@
 with lib;
 
 let
-  cfg = config.services.nixshare;
+  cfg = config.nixshare;
 
   cifsShares = filterAttrs (_: s: s.protocol == "cifs") cfg.shares;
 
@@ -40,7 +40,7 @@ let
 in
 {
   config = mkIf (cfg.enable && cifsShares != { }) {
-    services.nixshare.providers.cifs.enable = true;
+    nixshare.providers.cifs.enable = true;
 
     systemd.mounts = mapAttrsToList
       (_: s: {
