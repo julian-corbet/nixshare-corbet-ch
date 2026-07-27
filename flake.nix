@@ -61,6 +61,7 @@
         let pkgs = pkgsFor system; in
         {
           nixshare-watchdog = pkgs.callPackage ./pkgs/nixshare-watchdog.nix { };
+          nixshare-health = pkgs.callPackage ./pkgs/nixshare-health.nix { };
           default = self.packages.${system}.nixshare-watchdog;
         });
 

@@ -169,6 +169,69 @@ from `/etc/nixshare/watchdog.json`, the one JSON file `modules/core.nix`
 renders. That file is the entire interface between Nix and the watchdog
 script, the same shape as nixnet's own `/etc/nixnet/config.json` contract.
 
+## How the health monitor works
+
+The watchdog above catches a mount that never **establishes**. There is a
+second failure mode it structurally cannot see: a mount that established
+perfectly, is `active`, whose files read back correctly — and where every
+RPC takes seconds. systemd sees nothing wrong, so no unit ever leaves
+`active` and no watchdog fires. The session is unusable anyway.
+
+Measured on a real client during the incident this was written for:
+
+| operation | on the client | same op server-side |
+|---|---|---|
+| one `stat()` | **3263 ms** | 0.075 ms |
+| one `touch()` | **1947 ms** | — |
+| 200 small creates | **382 s** | 15 ms |
+
+…while `ping` to the server was 3.4 ms, and `nfsstat -rc` showed
+**retrans=1 out of 5,075,060 calls**. Nothing was retrying or failing; every
+RPC simply stalled before it went out. The kernel's only complaint was
+`SUNRPC: reached max allowed number (1) did not add transport to server`.
+The trigger was a metadata storm against the mount (a recursive `chown` over
+a git object store — ~10⁵ failing per-file operations). It never recovered
+on its own.
+
+`services.nixshare.health` probes each **already-established** mount on a
+timer, and escalates only on a sustained stall:
+
+1. **Probe** — one `stat()` per mounted share, hard-bounded by
+   `probeTimeoutSec`. Slower than `degradedLatencyMs` counts as degraded.
+2. **Hysteresis** — `consecutiveFailures` bad ticks in a row before acting.
+   A big copy, a cold cache or a scrub on the server produces one slow tick,
+   never a sustained one; the client wedge never clears on its own, so
+   waiting costs nothing.
+3. **The gate** — is the server actually reachable on its own port (2049 /
+   445)? A dead server and a wedged client look identical from the
+   mountpoint. If the server is down this **alerts and stops**: tearing down
+   mounts would achieve nothing except fighting the automount that is trying
+   to re-establish them.
+4. **Cure**, bounded by `recovery`:
+   `alert` → report only · `remount` → restart that peer's mount units ·
+   `reset-client` → if a remount did not help, rebuild the shared NFS client.
+
+### Why recovery is grouped by peer, not by share
+
+This is the part that is worth knowing, because the obvious fix does not
+work. NFS keeps **one `nfs_client` per server**, shared by every mount of
+that server (`/proc/fs/nfsfs/servers`, `USE` column). Unmounting a single
+mountpoint leaves that refcount non-zero, so the remount reattaches to the
+*same wedged client* and nothing changes — confirmed by hand during the
+incident, twice.
+
+The client is destroyed only when **every** mount of that server is gone
+**and** the fscache cookies pinning it are released. So `reset-client` stops
+all of the peer's mounts and automounts, stops `cachefilesd`, unloads the
+`cachefiles` module, then brings it all back. That is why the config is
+rendered as peer groups rather than a flat share list: a per-share view
+makes the only effective cure unexpressible.
+
+`reset-client` only ever runs for `protocol = "nfs"`, only after a plain
+remount has already been tried and failed, and never when the server is
+unreachable. `cooldownSec` bounds how often it may run, so a cure that
+does not help degrades into an alert rather than a teardown loop.
+
 ## Options
 
 `services.nixshare.*` (core — [modules/core.nix](modules/core.nix)):

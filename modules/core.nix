@@ -1,7 +1,10 @@
 # modules/core.nix
 #
-# nixshare's schema (services.nixshare.shares.<name>) plus the
-# protocol-agnostic watchdog. Shared verbatim between nixosModules.core
+# nixshare's schema (services.nixshare.shares.<name>) plus the two
+# protocol-agnostic supervisors: the stuck-automount `watchdog` (a mount
+# that never establishes) and the `health` monitor (a mount that
+# established fine and then degraded to seconds-per-RPC -- see
+# pkgs/nixshare-health.nix). Shared verbatim between nixosModules.core
 # and systemManagerModules.core (flake.nix) -- everything here touches
 # only environment.etc, systemd.services/timers, and a rendered JSON file,
 # none of which system-manager categorically can't reach (same portability
@@ -183,10 +186,56 @@ let
 
   watchdogPackage = pkgs.callPackage ../pkgs/nixshare-watchdog.nix { };
 
+  # ---------------------------------------------------------------------
+  # Health config render. Grouped by PEER, not by share, and that grouping
+  # is the whole point: NFS keeps one `nfs_client` per server shared by
+  # every mount of it (/proc/fs/nfsfs/servers, USE column), so a wedged
+  # client can only be destroyed by dropping ALL of that server's mounts at
+  # once. A per-share view would make the only effective cure unexpressible.
+  # See pkgs/nixshare-health.nix's header for the incident this encodes.
+  # ---------------------------------------------------------------------
+  healthPeerGroups =
+    let
+      entries = mapAttrsToList (name: s: { key = "${s.peer}|${s.protocol}"; inherit name; share = s; }) cfg.shares;
+      keys = lib.unique (map (e: e.key) entries);
+    in
+    map
+      (k:
+        let
+          members = lib.filter (e: e.key == k) entries;
+          first = (lib.head members).share;
+        in
+        {
+          peer = first.peer;
+          protocol = first.protocol;
+          # The reachability gate's port: the protocol's own well-known
+          # port, so "is the server actually up" is answered by the service
+          # we care about rather than by ICMP (which is routinely filtered
+          # independently of whether the share is serving).
+          port = if first.protocol == "nfs" then 2049 else 445;
+          shares = map (m: { inherit (m) name; mountpoint = m.share.mountpoint; }) members;
+        })
+      keys;
+
+  healthConfig = {
+    degradedLatencyMs = cfg.health.degradedLatencyMs;
+    probeTimeoutSec = cfg.health.probeTimeoutSec;
+    consecutiveFailures = cfg.health.consecutiveFailures;
+    cooldownSec = cfg.health.cooldownSec;
+    recovery = cfg.health.recovery;
+    stateDir = cfg.health.stateDir;
+    alertCommand = cfg.health.alertCommand;
+    peers = healthPeerGroups;
+  };
+
+  healthConfigFile = pkgs.writeText "nixshare-health.json" (builtins.toJSON healthConfig);
+
+  healthPackage = pkgs.callPackage ../pkgs/nixshare-health.nix { };
+
 in
 {
   options.services.nixshare = {
-    enable = mkEnableOption "nixshare declarative NFS/CIFS shares with stuck-automount watchdog";
+    enable = mkEnableOption "nixshare declarative NFS/CIFS shares, with a stuck-automount watchdog and a degraded-mount health monitor";
 
     establishTimeoutSec = mkOption {
       type = types.ints.positive;
@@ -261,6 +310,117 @@ in
         description = "The nixshare-watchdog executable. Override only to pin/patch a build.";
       };
     };
+
+    # -------------------------------------------------------------------
+    # health: the OTHER failure mode. watchdog covers a mount that never
+    # establishes; this covers one that established fine and then went
+    # useless -- `active`, readable, and taking seconds per RPC. systemd
+    # sees nothing wrong, so the watchdog structurally cannot fire.
+    # -------------------------------------------------------------------
+    health = {
+      enable = mkOption {
+        type = types.bool;
+        default = true;
+        description = ''
+          Run the mount-health monitor. On by default for the same reason
+          the watchdog is: an unattended client that silently degrades to
+          seconds-per-RPC is exactly the failure this project exists to
+          keep off the user's session. It only ever acts on a mount that is
+          already `active`, only after `consecutiveFailures` sustained bad
+          probes, and only when the server is provably reachable.
+        '';
+      };
+
+      pollIntervalSec = mkOption {
+        type = types.ints.positive;
+        default = 60;
+        description = ''
+          How often to probe each established mount. Much slower than the
+          watchdog's poll on purpose: this looks for a SUSTAINED stall, not
+          a moment of it, and every tick costs one real metadata round-trip
+          per mounted share.
+        '';
+      };
+
+      degradedLatencyMs = mkOption {
+        type = types.ints.positive;
+        default = 500;
+        description = ''
+          A single `stat()` on the mountpoint slower than this counts the
+          probe as degraded. Healthy is single-digit milliseconds even over
+          a WireGuard overlay; the real incident this defends against
+          measured 3263 ms for one stat. 500 leaves two orders of magnitude
+          of headroom over healthy while still catching that by a factor of
+          six, so ordinary load spikes do not register.
+        '';
+      };
+
+      probeTimeoutSec = mkOption {
+        type = types.ints.positive;
+        default = 10;
+        description = "Hard bound on a single probe, so a fully-hung mount cannot wedge the monitor itself. A timeout counts as the most degraded reading possible.";
+      };
+
+      consecutiveFailures = mkOption {
+        type = types.ints.positive;
+        default = 3;
+        description = ''
+          How many consecutive degraded ticks before recovery is attempted.
+          Hysteresis is what keeps a big copy, a cold cache, or a scrub on
+          the server from triggering a teardown; the client wedge this
+          targets does not clear on its own, so waiting costs nothing.
+        '';
+      };
+
+      cooldownSec = mkOption {
+        type = types.ints.positive;
+        default = 900;
+        description = "Minimum interval between recovery attempts for the same peer. Bounds the damage if recovery does not actually help -- the monitor alerts and waits rather than looping a disruptive teardown.";
+      };
+
+      recovery = mkOption {
+        type = types.enum [ "alert" "remount" "reset-client" ];
+        default = "reset-client";
+        description = ''
+          How far recovery may escalate.
+
+          `alert`        : report only, change nothing.
+          `remount`      : restart the peer's own mount units, and stop there.
+          `reset-client` : if a remount did not help, additionally destroy
+                           and rebuild the shared NFS client -- stop every
+                           mount AND automount of that peer, release the
+                           fscache cookies pinning it (stop cachefilesd,
+                           unload `cachefiles`), then bring it all back.
+
+          The default is the strongest because the weaker ones do not
+          actually cure the failure being targeted: a wedged `nfs_client` is
+          shared per SERVER, so remounting one share reattaches to the same
+          broken client and changes nothing (confirmed by hand during the
+          incident in pkgs/nixshare-health.nix's header). `reset-client`
+          only ever runs on `protocol = "nfs"`, and never when the server is
+          unreachable.
+        '';
+      };
+
+      stateDir = mkOption {
+        type = types.path;
+        default = "/run/nixshare";
+        description = "Where the monitor keeps its cross-tick state (consecutive-failure counts, cure cooldown stamps). On tmpfs by design -- a reboot clears client state anyway, so stale counters must not survive one.";
+      };
+
+      alertCommand = mkOption {
+        type = types.nullOr types.str;
+        default = cfg.watchdog.alertCommand;
+        defaultText = literalExpression "config.services.nixshare.watchdog.alertCommand";
+        description = "Alert command, same contract as the watchdog's; defaults to whatever the watchdog already uses so a host configures notification once.";
+      };
+
+      package = mkOption {
+        type = types.package;
+        default = healthPackage;
+        description = "The nixshare-health executable. Override only to pin/patch a build.";
+      };
+    };
   };
 
   config = mkIf cfg.enable {
@@ -309,6 +469,34 @@ in
         cfg.shares);
 
     environment.etc."nixshare/watchdog.json".source = watchdogConfigFile;
+    environment.etc."nixshare/health.json" = mkIf cfg.health.enable { source = healthConfigFile; };
+
+    systemd.timers.nixshare-health = mkIf cfg.health.enable {
+      description = "Probe established nixshare mounts for a degraded (but mounted) server connection";
+      wantedBy = [ "timers.target" ];
+      timerConfig = {
+        OnBootSec = "${toString cfg.health.pollIntervalSec}s";
+        OnUnitActiveSec = "${toString cfg.health.pollIntervalSec}s";
+        Unit = "nixshare-health.service";
+      };
+    };
+
+    systemd.services.nixshare-health = mkIf cfg.health.enable {
+      description = "nixshare health: detect and cure a degraded-but-mounted NFS client";
+      serviceConfig = {
+        Type = "oneshot";
+        ExecStart = "${cfg.health.package}/bin/nixshare-health";
+        # Unsandboxed for the SAME load-bearing reason as the watchdog (see
+        # its comment below): recovery performs `umount -f -l` and restarts
+        # .mount units, and both must land in the HOST's shared mount
+        # namespace. Any of systemd's namespace-based protections would give
+        # this unit a private mount namespace, silently turning the entire
+        # recovery into a no-op that still reports success. It additionally
+        # needs to unload a kernel module (`cachefiles`) to release the
+        # fscache cookies pinning the wedged client, which is likewise
+        # incompatible with the usual hardening set.
+      };
+    };
 
     systemd.timers.nixshare-watchdog = mkIf cfg.watchdog.enable {
       description = "Poll nixshare automounts for stuck establish attempts";
