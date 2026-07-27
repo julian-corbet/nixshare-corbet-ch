@@ -494,7 +494,12 @@ in
       wantedBy = [ "timers.target" ];
       timerConfig = {
         OnBootSec = "${toString cfg.health.pollIntervalSec}s";
-        OnUnitActiveSec = "${toString cfg.health.pollIntervalSec}s";
+        # InactiveSec, not ActiveSec: the interval is measured from when the
+        # last tick FINISHED. A recovery tick can legitimately run for minutes
+        # (see recoveryTimeoutSec), and ActiveSec would schedule the next run
+        # relative to its start -- firing immediately, or already overdue, the
+        # moment a long tick ends.
+        OnUnitInactiveSec = "${toString cfg.health.pollIntervalSec}s";
         Unit = "nixshare-health.service";
       };
     };
@@ -508,6 +513,13 @@ in
         # the teardown window, which is precisely how this tool would strand
         # the mounts it exists to rescue.
         TimeoutStartSec = "${toString cfg.health.recoveryTimeoutSec}s";
+        # The trap in the script catches TERM/INT; nothing in userspace can
+        # catch SIGKILL (an OOM kill, or the tail of systemd's own
+        # TimeoutStopSec escalation). ExecStopPost runs regardless of HOW the
+        # main process died, so an interrupted teardown is repaired as soon as
+        # systemd reaps the cgroup rather than waiting up to a full poll
+        # interval for the next tick to notice the leftover marker.
+        ExecStopPost = "${cfg.health.package}/bin/nixshare-health --heal-only";
         # The state the crash-recovery path replays lives here, and tmpfs is
         # correct: after a reboot the automounts re-establish on their own, so
         # a stale teardown record must not survive one.
@@ -530,7 +542,7 @@ in
       wantedBy = [ "timers.target" ];
       timerConfig = {
         OnBootSec = "${toString cfg.watchdog.pollIntervalSec}s";
-        OnUnitActiveSec = "${toString cfg.watchdog.pollIntervalSec}s";
+        OnUnitInactiveSec = "${toString cfg.watchdog.pollIntervalSec}s";
         Unit = "nixshare-watchdog.service";
       };
     };

@@ -58,6 +58,13 @@ writeShellApplication {
     # nixshare-health -- see pkgs/nixshare-health.nix and README.md
     # "How the health monitor works" for the full explanation.
 
+    # --heal-only: restore any interrupted teardown and exit, probing nothing.
+    # This is what the unit's ExecStopPost runs, so a tick killed by SIGKILL
+    # (which no trap can catch) is repaired as soon as systemd reaps the
+    # cgroup, instead of waiting up to a full poll interval for the next tick.
+    heal_only=no
+    [ "''${1:-}" = "--heal-only" ] && heal_only=yes
+
     config_file="''${NIXSHARE_HEALTH_CONFIG:-/etc/nixshare/health.json}"
 
     if [ ! -r "$config_file" ]; then
@@ -112,7 +119,18 @@ writeShellApplication {
     probe_ms() {
       local mp="$1" start end rc
       start=$(date +%s%N)
-      timeout "$probe_timeout" stat -c %i "$mp" >/dev/null 2>&1
+      # -k: follow SIGTERM with SIGKILL. HONEST LIMIT, stated rather than
+      # papered over: neither signal can end a stat() parked in an
+      # UNINTERRUPTIBLE (D) kernel wait -- SIGKILL is queued but not delivered
+      # until the task returns to userspace -- so against a truly hung mount
+      # `timeout` itself does not return and this tick stalls. That is a
+      # kernel-level constraint, not a scripting one. Backgrounding the probe
+      # and abandoning it would be WORSE, not better: an abandoned stat holds
+      # a reference on the wedged mount, and those references are exactly what
+      # keeps the nfs_client refcount above zero -- it would sabotage the one
+      # cure that works. The flock below bounds the damage to a single stuck
+      # process instead of one per tick.
+      timeout -k 5 "$probe_timeout" stat -c %i "$mp" >/dev/null 2>&1
       rc=$?
       end=$(date +%s%N)
       echo $(( (end - start) / 1000000 ))
@@ -231,7 +249,23 @@ writeShellApplication {
       done
     }
 
+    # ONE instance at a time. systemd already merges overlapping timer jobs,
+    # but a hand-run `nixshare-health` during a timer tick has no such
+    # protection -- and two concurrent recoveries tearing down the same peer
+    # is exactly the interleaving that strands mounts. Non-blocking: a second
+    # caller reports and leaves rather than queueing behind a stuck probe.
+    exec 9>"$state_dir/health.lock"
+    if ! flock -n 9; then
+      echo "nixshare-health: another instance holds the lock -- skipping this run"
+      exit 0
+    fi
+
     recover_orphaned_teardowns
+
+    if [ "$heal_only" = yes ]; then
+      echo "nixshare-health: --heal-only, nothing further to do"
+      exit 0
+    fi
 
     now=$(date +%s)
     peer_count=$(jq -r '.peers | length' "$config_file")
@@ -360,9 +394,19 @@ writeShellApplication {
       # peer. Every mount of this server must go, AND the fscache cookies
       # pinning the client must be released, or the refcount never reaches
       # zero and the rebuilt mounts reattach to the same wedged client.
+      # REFUSE, do not merely warn. Every mount of this server shares one
+      # nfs_client, so a mount nixshare does not know about holds its refcount
+      # above zero and the reset cannot destroy it. Proceeding anyway would
+      # stop every one of this peer's mounts, stop cachefilesd and unload the
+      # cachefiles module -- real, host-wide disruption -- to achieve provably
+      # nothing. Losing a cure that could never have worked costs the operator
+      # one alert; performing it costs them their mounts for the duration and
+      # fixes nothing. The cooldown is still stamped so this refusal does not
+      # re-fire every tick.
       mapfile -t strays < <(unmanaged_mounts_for "$peer" "''${mps[@]}")
       if [ "''${#strays[@]}" -gt 0 ]; then
-        notify "$peer -- WARNING: ''${#strays[@]} mount(s) of this server are NOT declared to nixshare: ''${strays[*]}. They share the same nfs_client, so they will hold its refcount above zero and this reset will probably NOT take effect. Declare them as shares of peer '$peer' (or unmount them) for recovery to work."
+        notify "$peer -- REFUSING reset-client: ''${#strays[@]} mount(s) of this server are not declared to nixshare (''${strays[*]}). They share the same nfs_client and would hold its refcount above zero, so the reset would tear everything down and still not take effect. Fix: declare them as shares of peer '$peer' (no other change needed), or unmount them. Not touching anything."
+        continue
       fi
 
       echo "nixshare-health: $peer -- tearing down the shared nfs_client (all ''${#mps[@]} mount(s) + fscache)"
@@ -410,9 +454,10 @@ writeShellApplication {
         notify "$peer RECOVERED after nfs_client reset (worst probe now ''${fworst}ms, was ''${worst}ms)."
         rm -f "$fail_file"
       else
-        cause=""
-        [ "''${#strays[@]}" -gt 0 ] && cause=" Most likely cause: ''${#strays[@]} undeclared mount(s) of this server (''${strays[*]}) kept the shared nfs_client alive, so it was never destroyed."
-        notify "$peer STILL DEGRADED after nfs_client reset ($final mount(s), worst ''${fworst}ms).$cause Manual intervention needed -- a reboot clears client state unconditionally."
+        # Undeclared mounts cannot be the explanation here: their presence is
+        # now a hard refusal above, so reaching this point means coverage was
+        # complete and the client still did not come back healthy.
+        notify "$peer STILL DEGRADED after a complete nfs_client reset ($final mount(s), worst ''${fworst}ms). Coverage was complete, so this is not an undeclared-mount problem. Manual intervention needed -- a reboot clears client state unconditionally."
       fi
     done
   '';
