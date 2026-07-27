@@ -138,6 +138,25 @@ writeShellApplication {
       esac
     }
 
+    # Every mount of a given server shares ONE nfs_client, so `reset-client`
+    # can only destroy it if it tears down ALL of them. This lists mounts of
+    # `$1` that are live on the box but NOT in the peer group being cured --
+    # each one keeps the refcount above zero and makes the cure a silent
+    # no-op. nixshare must not unmount what it does not own, so it reports
+    # them instead: without this the operator sees a recovery that "ran fine"
+    # and changed nothing, with no clue why. Matches on the device prefix as
+    # written in /proc/mounts, so a peer named differently there (an IP vs a
+    # name) will not be spotted -- stated in README rather than guessed at.
+    unmanaged_mounts_for() {
+      local peer="$1"; shift
+      local managed=" $* " mp
+      while read -r dev mp _; do
+        case "$dev" in
+          "$peer":*) case "$managed" in *" $mp "*) ;; *) echo "$mp" ;; esac ;;
+        esac
+      done < /proc/mounts
+    }
+
     now=$(date +%s)
     peer_count=$(jq -r '.peers | length' "$config_file")
     [ "$peer_count" -gt 0 ] || exit 0
@@ -265,6 +284,11 @@ writeShellApplication {
       # peer. Every mount of this server must go, AND the fscache cookies
       # pinning the client must be released, or the refcount never reaches
       # zero and the rebuilt mounts reattach to the same wedged client.
+      mapfile -t strays < <(unmanaged_mounts_for "$peer" "''${mps[@]}")
+      if [ "''${#strays[@]}" -gt 0 ]; then
+        notify "$peer -- WARNING: ''${#strays[@]} mount(s) of this server are NOT declared to nixshare: ''${strays[*]}. They share the same nfs_client, so they will hold its refcount above zero and this reset will probably NOT take effect. Declare them as shares of peer '$peer' (or unmount them) for recovery to work."
+      fi
+
       echo "nixshare-health: $peer -- tearing down the shared nfs_client (all ''${#mps[@]} mount(s) + fscache)"
 
       for mp in "''${mps[@]}"; do
@@ -305,7 +329,9 @@ writeShellApplication {
         notify "$peer RECOVERED after nfs_client reset (worst probe now ''${fworst}ms, was ''${worst}ms)."
         rm -f "$fail_file"
       else
-        notify "$peer STILL DEGRADED after nfs_client reset ($final mount(s), worst ''${fworst}ms). Manual intervention needed -- a reboot clears client state unconditionally."
+        cause=""
+        [ "''${#strays[@]}" -gt 0 ] && cause=" Most likely cause: ''${#strays[@]} undeclared mount(s) of this server (''${strays[*]}) kept the shared nfs_client alive, so it was never destroyed."
+        notify "$peer STILL DEGRADED after nfs_client reset ($final mount(s), worst ''${fworst}ms).$cause Manual intervention needed -- a reboot clears client state unconditionally."
       fi
     done
   '';

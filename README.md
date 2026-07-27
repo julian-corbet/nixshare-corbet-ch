@@ -232,6 +232,21 @@ remount has already been tried and failed, and never when the server is
 unreachable. `cooldownSec` bounds how often it may run, so a cure that
 does not help degrades into an alert rather than a teardown loop.
 
+**This has a hard prerequisite, and the monitor checks it for you.** Because
+the client is shared per server, `reset-client` can only destroy it if
+*every* live mount of that server goes down together. Any mount nixshare
+does not know about — a different export of the same server, a hand-rolled
+`systemd.mount`, an `/etc/fstab` line — holds the refcount above zero, and
+the reset becomes a silent no-op that reports success and changes nothing.
+Before tearing anything down the monitor lists the mounts of that server it
+is *not* covering and says so, and if the cure then fails it names them as
+the likely cause. Declare them as shares of the same `peer` (they need no
+other change) and recovery works.
+
+On one real box, seven mounts of the same server — including a completely
+different export — all shared a single `nfs_client`; declaring only one of
+them would have made recovery impossible while looking like it ran.
+
 ## Options
 
 `services.nixshare.*` (core — [modules/core.nix](modules/core.nix)):
