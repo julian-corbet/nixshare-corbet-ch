@@ -385,6 +385,57 @@ commits to today. nixosModules-only: `services.nfs.server`/
 `services.samba`/`services.avahi`/`services.samba-wsdd` have no
 system-manager equivalent.
 
+### The whole path, server to client — read this before reasoning about coverage
+
+The two halves compose into one chain, and the middle of it is not obvious
+from either end. Written out once, explicitly, because reasoning from the
+usual NFS assumptions gets it wrong:
+
+```
+  Nix declares          nixshare.server.nfs.sharenfs = { "pool/tree" = "rw=…,crossmnt"; … }
+        │
+        ▼
+  reconcile oneshot     zfs set sharenfs=<value> pool/tree   →   zfs share -a
+        │
+        ▼
+  ZFS owns the table    /etc/exports.d/zfs.exports        ← the ONLY writer
+                        /etc/exports stays EMPTY          ← by design, not omission
+        │
+        ▼
+  inheritance fans out  a handful of property sets become hundreds of exports,
+                        because child datasets inherit sharenfs from their parent
+        │
+        ▼
+  client mounts a share nixshare.shares.<name> → one .mount/.automount unit
+        │
+        ▼
+  crossmnt does the rest the kernel SYNTHESIZES a new mount the first time any
+                        process walks into a child dataset. No unit, no
+                        FragmentPath, nothing declares it — and nothing can.
+```
+
+Three consequences that repeatedly mislead people (and did mislead this
+project's own tooling until it was fixed):
+
+1. **There is no `/etc/exports` to reconcile against, and that is correct.**
+   The pool carries the shares as properties; the definition is the asset.
+   Looking for a split between Nix and ZFS here finds nothing, because Nix
+   *sets the ZFS property* — it does not compete with it.
+
+2. **A client will have far more mounts of a server than it declares shares,
+   and the number grows as the tree is browsed.** One real client went from
+   7 to 53 to 124 live mounts of a single server within hours, against 9
+   declared shares. This is normal, healthy `crossmnt` behaviour — not drift,
+   not misconfiguration, and not something to "fix" by declaring more shares.
+
+3. **Therefore coverage is judged by SUBTREE, never by exact mountpoint.** A
+   mount at or beneath a declared share is owned by that share: tearing the
+   share's subtree down removes it, and it returns on the next traversal.
+   Only a mount of the same server living *outside* every declared share is a
+   real coverage gap. The health monitor's stray check applies exactly this
+   rule; comparing raw mountpoint strings instead would report a hundred-plus
+   phantom gaps on a correctly-configured host and refuse recovery forever.
+
 ## Non-goals (v1)
 
 - **A resident watchdog daemon.** The watchdog is a systemd timer +
