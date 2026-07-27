@@ -119,6 +119,25 @@ writeShellApplication {
       return $rc
     }
 
+    # Read a numeric counter from a state file, tolerating anything that is
+    # not a clean integer. Load-bearing, not defensive noise: under `set -u`
+    # bash's arithmetic context treats a non-numeric bare word as a VARIABLE
+    # NAME, so `fails=$(( fails + 1 ))` against a corrupt state file is an
+    # "unbound variable" HARD ABORT, not a tolerable non-zero exit. That abort
+    # lands inside the per-peer loop BEFORE the file is rewritten, so the
+    # corruption never heals and every peer ordered after the bad one is
+    # silently never probed again -- a permanent monitoring blackout from one
+    # truncated write (OOM kill, power loss, full disk). Verified: a state file
+    # containing "garbage" aborts the script with exit 1.
+    read_counter() {
+      local f="$1" raw=""
+      [ -f "$f" ] && raw=$(cat "$f" 2>/dev/null || true)
+      case "$raw" in
+        ""|*[!0-9]*) echo 0 ;;
+        *) echo "$raw" ;;
+      esac
+    }
+
     now=$(date +%s)
     peer_count=$(jq -r '.peers | length' "$config_file")
     [ "$peer_count" -gt 0 ] || exit 0
@@ -176,8 +195,7 @@ writeShellApplication {
       # Hysteresis. A single slow tick is normal under real load -- a big
       # copy, a cold cache, a scrub on the server. Only a SUSTAINED stall is
       # the signature this tool acts on.
-      fails=0
-      [ -f "$fail_file" ] && fails=$(cat "$fail_file")
+      fails=$(read_counter "$fail_file")
       fails=$(( fails + 1 ))
       echo "$fails" > "$fail_file"
       echo "nixshare-health: $peer degraded ($bad/$checked probes over ''${degraded_ms}ms:$detail) [$fails/$needed_fails]"
@@ -190,8 +208,7 @@ writeShellApplication {
         continue
       fi
 
-      last_cure=0
-      [ -f "$cure_file" ] && last_cure=$(cat "$cure_file")
+      last_cure=$(read_counter "$cure_file")
       if [ $(( now - last_cure )) -lt "$cooldown" ]; then
         echo "nixshare-health: $peer still degraded but within cooldown ($(( now - last_cure ))s < ''${cooldown}s) -- not re-curing"
         continue
@@ -206,6 +223,10 @@ writeShellApplication {
 
       if [ "$recovery" = "alert" ]; then
         notify "$peer degraded: $bad/$checked probes over ''${degraded_ms}ms, worst ''${worst}ms$marker. recovery=alert, taking no action."
+        # Stamping the cooldown on the alert-only path is deliberate: it makes
+        # cooldownSec the notification rate-limit too, so a peer that stays
+        # degraded produces one alert per cooldown window rather than one per
+        # tick. Without this, recovery="alert" is an alert-spam generator.
         echo "$now" > "$cure_file"
         continue
       fi
