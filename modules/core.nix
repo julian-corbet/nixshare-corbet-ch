@@ -415,6 +415,24 @@ in
         description = "Alert command, same contract as the watchdog's; defaults to whatever the watchdog already uses so a host configures notification once.";
       };
 
+      recoveryTimeoutSec = mkOption {
+        type = types.ints.positive;
+        default = 300;
+        description = ''
+          `TimeoutStartSec` for the health unit, and it is safety-critical
+          rather than a tuning knob. systemd's stock `DefaultTimeoutStartSec`
+          is **15 seconds**; a `reset-client` teardown runs against a WEDGED
+          server connection where every `systemctl stop` is itself slow, and
+          the real incident's manual teardown took well over a minute. At the
+          default, systemd SIGTERMs the tool mid-teardown -- with the mounts
+          AND their automounts stopped and nothing left to re-trigger them.
+          The tool defends itself (an EXIT/TERM trap restores what it tore
+          down, and a leftover teardown record is replayed on the next tick),
+          but the bound has to be generous enough that the interruption does
+          not happen routinely in the first place.
+        '';
+      };
+
       package = mkOption {
         type = types.package;
         default = healthPackage;
@@ -486,6 +504,15 @@ in
       serviceConfig = {
         Type = "oneshot";
         ExecStart = "${cfg.health.package}/bin/nixshare-health";
+        # See recoveryTimeoutSec: the stock 15s default lands SIGTERM inside
+        # the teardown window, which is precisely how this tool would strand
+        # the mounts it exists to rescue.
+        TimeoutStartSec = "${toString cfg.health.recoveryTimeoutSec}s";
+        # The state the crash-recovery path replays lives here, and tmpfs is
+        # correct: after a reboot the automounts re-establish on their own, so
+        # a stale teardown record must not survive one.
+        RuntimeDirectory = "nixshare";
+        RuntimeDirectoryPreserve = "yes";
         # Unsandboxed for the SAME load-bearing reason as the watchdog (see
         # its comment below): recovery performs `umount -f -l` and restarts
         # .mount units, and both must land in the HOST's shared mount

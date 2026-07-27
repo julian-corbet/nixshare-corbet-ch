@@ -157,6 +157,82 @@ writeShellApplication {
       done < /proc/mounts
     }
 
+    # ------------------------------------------------------------------
+    # THE RESTORE GUARANTEE.
+    #
+    # Between "stop the peer's mounts" and "start them again" there is a
+    # window in which this host has NO mounts of that server AND no
+    # automounts to re-trigger them (the reset stops those too, deliberately
+    # -- an automount re-establishing mid-teardown would recreate the very
+    # nfs_client reference the reset exists to drop). Dying in that window
+    # leaves the box with its network storage simply GONE, which is far
+    # worse than the degradation being cured.
+    #
+    # That is not a theoretical risk: systemd's DefaultTimeoutStartSec is
+    # 15s on a stock host, the teardown runs against a WEDGED client where
+    # every `systemctl stop` is itself slow, and the real incident's manual
+    # teardown took well over a minute. Without a bound raised at the unit
+    # level (modules/core.nix sets TimeoutStartSec from recoveryTimeoutSec)
+    # SIGTERM lands mid-window essentially every time.
+    #
+    # So: record what has been torn down, and restore it from an EXIT/TERM/INT
+    # trap. Idempotent -- `systemctl start` on an already-started unit is a
+    # no-op, so running this twice (trap plus the normal path) is harmless.
+    # SIGKILL cannot be trapped; modules/core.nix adds an ExecStopPost
+    # backstop for that case.
+    # ------------------------------------------------------------------
+    teardown_mps=()
+    teardown_cachefilesd=no
+    teardown_file=""
+
+    restore_torn_down() {
+      [ "''${#teardown_mps[@]}" -gt 0 ] || return 0
+      echo "nixshare-health: restoring ''${#teardown_mps[@]} mount(s) torn down by recovery"
+      local mp
+      for mp in "''${teardown_mps[@]}"; do
+        systemctl start "$(unit_for "$mp")" 2>/dev/null || true
+      done
+      for mp in "''${teardown_mps[@]}"; do
+        systemctl start "$(automount_for "$mp")" 2>/dev/null || true
+      done
+      if [ "$teardown_cachefilesd" = yes ]; then
+        systemctl start cachefilesd 2>/dev/null || true
+      fi
+      teardown_mps=()
+      teardown_cachefilesd=no
+      [ -n "''${teardown_file:-}" ] && rm -f "$teardown_file"
+      teardown_file=""
+      return 0
+    }
+
+    trap restore_torn_down EXIT INT TERM
+
+    # SIGKILL cannot be trapped, and neither can an OOM kill or a crash. So
+    # the armed list is also written to disk before the first stop and removed
+    # after a successful restore: a leftover file means a previous run died
+    # mid-teardown, and THIS run restores those mounts before doing anything
+    # else. Self-healing on the next tick, with no systemd machinery needed.
+    # (A reboot needs no handling -- stateDir is tmpfs and the automounts come
+    # back on their own.)
+    recover_orphaned_teardowns() {
+      local f mp
+      for f in "$state_dir"/teardown.*; do
+        [ -e "$f" ] || continue
+        echo "nixshare-health: found an interrupted teardown ($f) -- restoring its mounts first" >&2
+        while read -r mp; do
+          case "$mp" in
+            "") continue ;;
+            "CACHEFILESD") systemctl start cachefilesd 2>/dev/null || true ;;
+            *) systemctl start "$(unit_for "$mp")" 2>/dev/null || true
+               systemctl start "$(automount_for "$mp")" 2>/dev/null || true ;;
+          esac
+        done < "$f"
+        rm -f "$f"
+      done
+    }
+
+    recover_orphaned_teardowns
+
     now=$(date +%s)
     peer_count=$(jq -r '.peers | length' "$config_file")
     [ "$peer_count" -gt 0 ] || exit 0
@@ -291,6 +367,12 @@ writeShellApplication {
 
       echo "nixshare-health: $peer -- tearing down the shared nfs_client (all ''${#mps[@]} mount(s) + fscache)"
 
+      # Arm the restore guarantee BEFORE the first stop, so any death from
+      # here on re-establishes these mounts on the way out.
+      teardown_mps=("''${mps[@]}")
+      teardown_file="$state_dir/teardown.$slug"
+      printf '%s\n' "''${mps[@]}" > "$teardown_file"
+
       for mp in "''${mps[@]}"; do
         systemctl stop "$(automount_for "$mp")" 2>/dev/null || true
       done
@@ -299,22 +381,21 @@ writeShellApplication {
         umount -f -l "$mp" 2>/dev/null || true
       done
 
-      cachefilesd_was_active=no
+      # teardown_cachefilesd is the trap's record, so there is exactly ONE
+      # piece of state saying "this must be started again" -- the normal and
+      # the interrupted paths read the same flag.
       if systemctl is-active --quiet cachefilesd 2>/dev/null; then
-        cachefilesd_was_active=yes
+        teardown_cachefilesd=yes
+        echo "CACHEFILESD" >> "$teardown_file"
         systemctl stop cachefilesd 2>/dev/null || true
       fi
       # Releases the fscache cookies that keep the nfs_client refcount above
       # zero. Harmless no-op when the module is absent or not in use.
       modprobe -r cachefiles 2>/dev/null || true
 
-      for mp in "''${mps[@]}"; do
-        systemctl start "$(unit_for "$mp")" 2>/dev/null || true
-      done
-      for mp in "''${mps[@]}"; do
-        systemctl start "$(automount_for "$mp")" 2>/dev/null || true
-      done
-      [ "$cachefilesd_was_active" = yes ] && systemctl start cachefilesd 2>/dev/null || true
+      # Same code path the trap uses, so the normal and the interrupted case
+      # can never drift apart. Clears the armed state on success.
+      restore_torn_down
 
       sleep 2
       final=0
