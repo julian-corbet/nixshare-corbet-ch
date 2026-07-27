@@ -165,14 +165,59 @@ writeShellApplication {
     # and changed nothing, with no clue why. Matches on the device prefix as
     # written in /proc/mounts, so a peer named differently there (an IP vs a
     # name) will not be spotted -- stated in README rather than guessed at.
+    # A mount is COVERED if it is a declared mountpoint, or lives anywhere
+    # BENEATH one. That second clause is not a convenience -- without it this
+    # check is wrong by two orders of magnitude on any real server.
+    #
+    # NFSv4 exports carrying `crossmnt` (which is what ZFS per-dataset sharing
+    # produces, and it is the norm, not an edge case) make the kernel
+    # synthesize a NEW mount the first time any process traverses into a
+    # directory that is a separate dataset server-side. Those submounts have
+    # no systemd unit and no FragmentPath -- nothing in any config declares
+    # them, and nothing can: they appear on access, and the set only ever
+    # grows as more of the tree is touched. One observed client went from 7 to
+    # 53 to 124 live mounts of a single server in a few hours, against 9
+    # declared shares and ~200 crossmnt exports available to it.
+    #
+    # Comparing raw mountpoints against the declared list would therefore
+    # report a hundred-plus "undeclared" mounts and refuse recovery forever,
+    # on a host whose coverage is in fact complete. A submount of a declared
+    # share is already owned: tearing that share's subtree down removes it,
+    # and it returns by itself on the next traversal -- no declaration needed.
+    # Only a mount of this server living OUTSIDE every declared share is a
+    # genuine coverage gap.
     unmanaged_mounts_for() {
       local peer="$1"; shift
-      local managed=" $* " mp
+      local declared=("$@") mp d covered
       while read -r dev mp _; do
         case "$dev" in
-          "$peer":*) case "$managed" in *" $mp "*) ;; *) echo "$mp" ;; esac ;;
+          "$peer":*) ;;
+          *) continue ;;
         esac
+        covered=no
+        for d in "''${declared[@]}"; do
+          if [ "$mp" = "$d" ] || case "$mp" in "$d"/*) true ;; *) false ;; esac; then
+            covered=yes
+            break
+          fi
+        done
+        [ "$covered" = no ] && echo "$mp"
       done < /proc/mounts
+    }
+
+    # Every live mount at or beneath a declared mountpoint, DEEPEST FIRST.
+    # The teardown must unmount the whole subtree: each crossmnt submount is
+    # an independent mount of the same server and holds its own reference on
+    # the shared nfs_client, so unmounting only the declared parent leaves the
+    # refcount above zero and the reset silently fails -- the exact failure the
+    # peer-grouping exists to avoid, reintroduced one level down.
+    subtree_mounts_of() {
+      local root="$1" mp
+      while read -r _ mp _; do
+        if [ "$mp" = "$root" ] || case "$mp" in "$root"/*) true ;; *) false ;; esac; then
+          echo "$mp"
+        fi
+      done < /proc/mounts | awk '{ print gsub(/\//,"/"), $0 }' | sort -rn | cut -d" " -f2-
     }
 
     # ------------------------------------------------------------------
@@ -422,7 +467,14 @@ writeShellApplication {
       done
       for mp in "''${mps[@]}"; do
         systemctl stop "$(unit_for "$mp")" 2>/dev/null || true
-        umount -f -l "$mp" 2>/dev/null || true
+        # Deepest first: a parent cannot be unmounted while its crossmnt
+        # children are still mounted, and each child holds its own reference
+        # on the shared client. The declared mountpoint itself is included by
+        # subtree_mounts_of, so it is unmounted last, after its subtree.
+        while read -r sub; do
+          [ -n "$sub" ] || continue
+          umount -f -l "$sub" 2>/dev/null || true
+        done < <(subtree_mounts_of "$mp")
       done
 
       # teardown_cachefilesd is the trap's record, so there is exactly ONE
