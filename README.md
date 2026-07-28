@@ -288,8 +288,21 @@ modules, not meant to be set directly.
 `modules/providers/nfs.nix` — recognized `cacheSettings` keys: `nfsvers`
 (default `4.2`), `timeo` (default `50`), `retrans` (default `3`),
 `actimeo` (default `60`), `lookupcache` (default `positive`), `nconnect`
-(default `8`), `fsc` (`"true"`/`"false"`, default `"false"`). Always
-mounts `soft` (never `hard` — see the design note below) with `nofail`.
+(default `8`), `fsc` (`"true"`/`"false"`, default `"false"`), `softreval`
+(`"true"`/`"false"`, default `"false"`). Always mounts `soft` (never `hard`
+— see the design note below) with `nofail`.
+
+`softreval` is not a throughput knob. While the server is reachable it changes
+nothing, because revalidation simply succeeds. It matters only once
+revalidation has timed out: the client keeps serving paths and attributes it
+already holds instead of failing. On a plain `soft` mount an outage makes even
+a `stat()` on an already-cached path fail after the retrans budget — which is
+how a desktop session, which stats every mountpoint at login, stalls on data
+the client is already holding. Operations that genuinely need the server still
+time out and error after `retrans`, so the bounded-failure property `soft`
+exists to provide is preserved rather than traded away. `nfs(5)` also names
+unmounting a tree from a permanently-dead server as a motivating case — the
+same stuck-teardown class the watchdog above exists to survive.
 
 **`fsc` is genuinely per-share — but concurrent establishment can leak it.**
 Verified by remounting shares one at a time and reading the live flag from

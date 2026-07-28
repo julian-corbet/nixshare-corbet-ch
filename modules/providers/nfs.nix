@@ -28,6 +28,27 @@ let
       lookupcache = opt s "lookupcache" "positive";
       nconnect = opt s "nconnect" "8";
       useFsc = (opt s "fsc" "false") == "true";
+      # softreval: keep serving PATHS and ATTRIBUTES from cache once revalidation
+      # has timed out, instead of failing. It changes nothing while the server is
+      # reachable -- revalidation simply succeeds -- so it is not a throughput
+      # knob; it only alters behaviour in the degraded case, which is exactly the
+      # case a laptop-class client spends its worst minutes in.
+      #
+      # WHY IT MATTERS WITH `soft`: on a plain soft mount an outage makes even a
+      # stat() on an ALREADY-CACHED path fail once the retrans budget is spent
+      # (here ~35 s: timeo is deciseconds and the RPC timeout doubles per
+      # retransmission, 5 + 10 + 20). A desktop session stats every mountpoint at
+      # login, so the session stalls on paths whose attributes the client already
+      # holds. With softreval those resolve instantly from cache, while anything
+      # that genuinely needs the server still times out and errors after retrans
+      # -- nfs(5) states that combination explicitly. The bounded-failure property
+      # `soft` exists to provide is therefore preserved, not traded away.
+      #
+      # It also helps the teardown path: nfs(5) calls out "trying to unmount a
+      # filesystem tree from a server that is permanently down" as a motivating
+      # case -- the same stuck-unmount class that LazyUnmount and this module's
+      # watchdog exist to survive.
+      useSoftreval = (opt s "softreval" "false") == "true";
       base = [
         "nfsvers=${nfsvers}"
         "soft" # required: a "hard" mount is exactly what the watchdog exists to route around -- see README's design note
@@ -39,7 +60,8 @@ let
         "actimeo=${actimeo}"
         "lookupcache=${lookupcache}"
         "nconnect=${nconnect}"
-      ] ++ optional useFsc "fsc";
+      ] ++ optional useFsc "fsc"
+        ++ optional useSoftreval "softreval";
     in
     concatStringsSep "," (base ++ s.extraOptions);
 
