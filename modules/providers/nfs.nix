@@ -45,8 +45,139 @@ let
 
 in
 {
+  options.nixshare.nfsClient.delegationWatermark = mkOption {
+    type = types.nullOr types.ints.positive;
+    default = null;
+    example = 50000;
+    description = ''
+      `nfsv4.delegation_watermark` — the cap on how many NFSv4 delegations
+      this HOST's NFS client will hold before it starts handing them back.
+      Client-global on purpose: it is a kernel module parameter, one value
+      for the whole machine, so it deliberately does not live under
+      `shares.<name>` the way `cacheSettings` does. `null` leaves the
+      kernel default (5000) alone.
+
+      Raise it when the client legitimately works over more open files
+      than the default allows. Above the watermark the client continuously
+      returns every delegation that has no active reference — and during a
+      tree-walk every file goes unreferenced the moment it is closed, so
+      each new `OPEN`'s delegation is reaped immediately and every file
+      costs `OPEN` + `DELEGRETURN` instead of `OPEN` alone. Re-reads never
+      get cheaper, because the delegation is always already gone.
+
+      Measured on a host holding ~40k delegations against the 5000 default,
+      reading 250 previously-untouched files twice:
+
+        watermark 5000   pass 1: 250 OPEN + 250 DELEGRETURN
+                         pass 2: 250 OPEN + 250 DELEGRETURN   (no reuse)
+        watermark 50000  pass 1: 250 OPEN +   0 DELEGRETURN
+                         pass 2:   0 OPEN +   0 DELEGRETURN   (fully local)
+
+      The cost is server-side state: the server tracks every delegation it
+      has handed out, and every LOCAL write on the server to a delegated
+      file forces a `CB_RECALL` round-trip back to this client before the
+      write proceeds. On a link where that round-trip is slow (a laptop on
+      WiFi), a high watermark converts "client caches well" into "server
+      writes stall". Size it to the working set you actually want cached,
+      not to infinity.
+    '';
+  };
+
   config = mkIf (cfg.enable && nfsShares != { }) {
     nixshare.providers.nfs.enable = true;
+
+    # Two mechanisms on purpose, because neither alone is sufficient:
+    # modprobe.d applies only when the module is LOADED (so it covers every
+    # future boot), and the sysfs write applies to the module that is
+    # ALREADY loaded (so the setting takes effect on switch, without
+    # demanding a reboot to become true). The parameter is 0644 in sysfs,
+    # so the running value is writable.
+    environment.etc."modprobe.d/nixshare-nfs.conf" =
+      mkIf (cfg.nfsClient.delegationWatermark != null) {
+        text = ''
+          # Managed by nixshare (modules/providers/nfs.nix).
+          options nfsv4 delegation_watermark=${toString cfg.nfsClient.delegationWatermark}
+        '';
+      };
+
+    systemd.services.nixshare-nfs-client-tunables =
+      mkIf (cfg.nfsClient.delegationWatermark != null) {
+        description = "Apply nixshare NFS client tunables to the already-loaded nfsv4 module";
+        wantedBy = [ "multi-user.target" ];
+        serviceConfig = {
+          Type = "oneshot";
+          RemainAfterExit = true;
+        };
+        script = ''
+          p=/sys/module/nfsv4/parameters/delegation_watermark
+          # Absent means nfsv4 is not loaded yet; modprobe.d above will
+          # supply the value at load time, so this is a no-op, not a failure.
+          if [ -w "$p" ]; then
+            echo ${toString cfg.nfsClient.delegationWatermark} > "$p"
+            echo "nixshare: delegation_watermark = $(cat $p)"
+          else
+            echo "nixshare: nfsv4 not loaded; modprobe.d will apply the watermark at load"
+          fi
+        '';
+      };
+
+    # ── `fsc` IS genuinely per-share, and it can differ between a share and
+    # its own SUBTREE -- which is what makes a granular cache policy
+    # possible at all. Verified by remounting shares individually and
+    # reading the live flag out of /proc/mounts.
+    #
+    # ⚠ WITH ONE HARD RULE, MEASURED AND DETERMINISTIC: **a mount inherits
+    # `fsc` from an already-mounted ANCESTOR, overriding its own option.**
+    # With the parent tree mounted WITH fsc, three different child datasets
+    # each asked for no fsc and each came up cached -- 9 of 9 attempts, no
+    # variation. Unmount that parent and the same mounts honour themselves
+    # exactly: 4 of 4 came up uncached, and a sibling asking FOR fsc got
+    # it. The child's request is simply discarded while a cached ancestor
+    # is live, and nothing in the unit file shows it -- only /proc/mounts
+    # and /proc/fs/nfsfs/volumes do.
+    #
+    # CONSEQUENCE FOR CALLERS, enforced by the assertion below: to scope
+    # caching to part of a tree, the ENCLOSING share must declare
+    # `fsc = "false"` and the caching must go on the leaves. A cached
+    # parent silently makes every declared child cached too, and the
+    # config then lies about what it does.
+    #
+    # (Recorded honestly rather than folded into a tidy theory: on the same
+    # host, four top-level shares that are NOT descendants of any cached
+    # share also came up carrying fsc after boot, when seven mounts to one
+    # server established simultaneously at login. Remounting any of them
+    # alone cleared it. Ancestry cannot explain that one -- the shared
+    # NFSv4 pseudo-root is the obvious suspect but was not proven. If you
+    # see unexplained fsc on a share, remount it alone and re-check.)
+    assertions =
+      let
+        fscOf = s: (opt s "fsc" "false") == "true";
+        under = a: b: a.peer == b.peer
+          && a.mountpoint != b.mountpoint
+          && hasPrefix "${b.mountpoint}/" a.mountpoint;
+        cachedAncestors = s: filter (o: fscOf o && under s o) (attrValues nfsShares);
+      in
+      mapAttrsToList
+        (name: s: {
+          assertion = cachedAncestors s == [ ];
+          message = ''
+            nixshare.shares.${name} (${s.mountpoint}) is enclosed by a share
+            that sets cacheSettings.fsc = "true"
+            (${concatStringsSep ", " (map (o: o.mountpoint) (cachedAncestors s))}),
+            so its OWN fsc setting will be discarded at mount time.
+
+            A mount inherits fsc from an already-mounted ancestor. Measured
+            deterministically: with a cached parent live, 9 of 9 child mounts
+            asking for no fsc came up cached anyway; with the parent
+            unmounted, 4 of 4 honoured themselves. Nothing in the generated
+            unit file reveals this -- only /proc/mounts does.
+
+            Fix: set cacheSettings.fsc = "false" (or leave it unset) on the
+            enclosing share and declare caching on the leaves that should
+            actually have it.
+          '';
+        })
+        nfsShares;
 
     systemd.mounts = mapAttrsToList
       (_: s: {

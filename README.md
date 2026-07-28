@@ -70,7 +70,7 @@ nixshare = {
     mountpoint = "/mnt/example";
     cacheSettings = {
       actimeo = "60";
-      fsc = "true"; # persistent local cachefilesd cache for this share
+      fsc = "true"; # persistent local cachefilesd cache -- PER-PEER, see below
     };
   };
 
@@ -290,6 +290,33 @@ modules, not meant to be set directly.
 `actimeo` (default `60`), `lookupcache` (default `positive`), `nconnect`
 (default `8`), `fsc` (`"true"`/`"false"`, default `"false"`). Always
 mounts `soft` (never `hard` — see the design note below) with `nofail`.
+
+**`fsc` is genuinely per-share — but concurrent establishment can leak it.**
+Verified by remounting shares one at a time and reading the live flag from
+`/proc/mounts`: each share honours its own declaration in both directions.
+What does *not* survive is parallel setup. On a nine-share host, the four
+shares still mounted from boot carried `fsc` despite their units never
+asking for it — exactly the set that established simultaneously when the
+desktop session stat'd every mountpoint at login. A mount with no `fsc` in
+its own options can come up cloned from a superblock belonging to one that
+has it, and the result is invisible in the unit file; only `/proc/mounts`
+and `/proc/fs/nfsfs/volumes` show it. Remounting that share alone fixes it
+until the next boot.
+
+That is a runtime race, not a declaration error, so there is no eval-time
+guard for it. The reliable mitigation is placement: keep `fsc = "true"` off
+any share that participates in the login-time mount storm, and put it on
+the big, cold, deliberately-accessed trees instead.
+
+Worth knowing before turning it on: FS-Cache accelerates **data** reads
+only. It does nothing for `OPEN`/`GETATTR`/`LOOKUP`/`READDIR`, and on a
+metadata-bound workload it is not neutral — it turns every file the client
+touches into a cookie lifecycle on the unbound `fscache` workqueue. On a
+tree-walk-heavy host that measured 163k `OPEN` against 18 `READ` RPCs, that
+came to 579k cookie acquisitions in 26 minutes for 447 cache writes, and
+three concurrent recursive greps put >1000 `kworker/uNN:M-fscache` threads
+into D-state at load average 341. Cache large files you re-read; do not
+cache a source tree you mostly walk.
 
 `modules/providers/cifs.nix` — recognized `cacheSettings` keys: `vers`
 (default `3.1.1`), `cache` (default `strict`). Falls back to the `guest`
