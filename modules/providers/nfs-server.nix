@@ -85,6 +85,51 @@ in
       description = "cgroup v2 IOWeight for nfs-server.service, same reasoning as cpuWeight.";
     };
 
+    leaseTime = lib.mkOption {
+      type = lib.types.ints.positive;
+      default = 90;
+      example = 45;
+      description = ''
+        NFSv4 lease time in seconds (`[nfsd] lease-time` in nfs.conf, which
+        `rpc.nfsd` writes to `/proc/fs/nfsd/nfsv4leasetime` at startup).
+        90 is the kernel default.
+
+        This is the number that decides **how long a local write on this
+        server stalls when a client holding a delegation on that file has
+        vanished** — asleep, lid shut, off the network. The server must
+        recall the delegation before the write may proceed; if the client
+        does not answer, it waits out the full lease before revoking. So
+        the lease time is the worst-case stall, and it is paid by processes
+        running ON the server, not by the absent client.
+
+        Lower it when clients are laptops rather than always-on hosts, and
+        especially when `nixshare.nfsClient.delegationWatermark` is raised
+        — a high watermark multiplies the number of files carrying that
+        stall. Do not chase it to zero: the lease is also the window a
+        client has to renew across a transient network blip, and a client
+        that misses it loses ALL its state and must reclaim, which on a
+        client holding tens of thousands of delegations is its own storm.
+
+        Cannot be changed on a running server (`/proc/fs/nfsd/nfsv4leasetime`
+        returns EBUSY while nfsd is up), so a change here takes effect on
+        the next `nfs-server` restart, not at switch time.
+      '';
+    };
+
+    graceTime = lib.mkOption {
+      type = lib.types.ints.positive;
+      default = 90;
+      example = 45;
+      description = ''
+        NFSv4 grace period in seconds (`[nfsd] grace-time`) — how long
+        after THIS server restarts clients may reclaim the state they held
+        before. Keep it >= `leaseTime`: a client that was holding a lease
+        needs at least a full lease period to notice the restart and
+        reclaim, and a grace shorter than the lease silently drops state
+        that was legitimately reclaimable. Same restart-to-apply caveat.
+      '';
+    };
+
     trustedInterfaces = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [ "br0" "tailscale0" ];
@@ -132,6 +177,8 @@ in
       "vers4.0" = true;
       "vers4.1" = true;
       "vers4.2" = true;
+      "lease-time" = cfg.leaseTime;
+      "grace-time" = cfg.graceTime;
     };
 
     services.nfs.idmapd.settings.General.Domain = cfg.domain;
