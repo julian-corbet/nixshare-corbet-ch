@@ -518,7 +518,7 @@ watchdog with genuine stuck-attempt detection logic, real `services.nfs.server`/
 `services.samba` exports, not stubs. The server-side providers are a
 direct relocation of an already-running production module (see
 [Server-side exports](#server-side-exports)); the client-side providers
-have run against a real fleet since their own introduction.
+have run across real hosts since their own introduction.
 `experiments/README.md` tracks every default and assumption that's
 reasoned, not yet measured, against a
 real deployment.

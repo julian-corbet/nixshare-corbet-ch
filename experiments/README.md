@@ -11,7 +11,7 @@ every entry below corresponds to a default or design choice that's
 reasoned, not measured. Results feed back into `modules/core.nix`'s
 defaults as they close.
 
-All open; nothing has been run yet (fresh scaffold, no real fleet has run
+All open; nothing has been run yet (fresh scaffold, no real hosts has run
 this code).
 
 ## 001 — is 30s the right default `automountTimeoutSec`?
@@ -28,7 +28,7 @@ fail cleanly on its own (ordinary refused-connection case) isn't also
 caught by the watchdog, while still bounding total user-visible hang time
 to a low tens-of-seconds range rather than however long a genuinely stuck
 kernel RPC call would otherwise sit. Not validated against a real stuck
-mount — no fleet host runs nixshare yet.
+mount — no host runs nixshare yet.
 
 **Method sketch:** on the actual motivating incident's peer (an overlay
 address that's gone fully dark, packets black-holed rather than
@@ -76,7 +76,7 @@ evaluation passes it) — has this actually been checked against a real
 
 **Hypothesis:** sound in principle (it's the real command, the same one
 systemd's own unit generator effectively uses), but unverified against an
-actual `system-manager`-applied host — no fleet host runs nixshare yet.
+actual `system-manager`-applied host — no host runs nixshare yet.
 
 **Status:** open.
 
