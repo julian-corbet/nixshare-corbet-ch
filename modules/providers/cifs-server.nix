@@ -19,6 +19,10 @@
 let
   cfg = config.nixshare.server.cifs;
 
+  # Shared with providers/nfs-server.nix — see modules/zfs-names.nix for why the predicate lives in
+  # one place and why a constraint exists on top of the escaping below.
+  inherit (import ../zfs-names.nix { inherit lib; }) safeZfsTreeName unsafeTreeNameMessage;
+
   # Set each SMB tree sharesmb=on, then turn OFF every descendant
   # dataset. sharesmb INHERITS down the tree, so a bare `set on` makes
   # EVERY child dataset its own top-level usershare. We want exactly
@@ -90,6 +94,29 @@ in
   };
 
   config = lib.mkIf cfg.enable {
+    # Reject a hostile dataset name at BUILD time, exactly as the nfs sibling
+    # does. `applyScript` above already passes the whole list through
+    # `lib.escapeShellArgs`, so this is NOT closing a live hole -- it is the
+    # other half of the same two-layer defence, and it exists because the
+    # escaping half was demonstrably unguarded: reverting `escapeShellArgs` to a
+    # plain `concatStringsSep " "` left every check in this repo green while the
+    # rendered script became `for tree in pool/x; touch /tmp/PWNED; ...`.
+    #
+    # Escaping is a defence you must remember at each new interpolation; a
+    # constraint on the value is one you cannot forget. Keeping the two
+    # providers symmetric matters for the same reason -- the next person to add
+    # a third provider copies whichever one they read first.
+    assertions = map
+      (tree: {
+        assertion = safeZfsTreeName tree;
+        message = unsafeTreeNameMessage {
+          optionPath = "nixshare.server.cifs.sharesmb";
+          inherit tree;
+          unit = "smb-shares-apply.service";
+        };
+      })
+      cfg.sharesmb;
+
     services.samba = {
       enable = true;
       # nmbd = NetBIOS name service: resolves \\<netbiosName> + legacy

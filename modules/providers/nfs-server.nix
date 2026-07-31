@@ -31,7 +31,11 @@ let
   #    `val`, is what keeps the generated script safe even if that
   #    assertion is ever bypassed by a future refactor or a caller path
   #    that skips module assertions.
-  safeZfsTreeName = tree: builtins.match "[A-Za-z0-9_.:/-]+" tree != null;
+  # Defined once in modules/zfs-names.nix and shared with providers/cifs-server.nix, which builds a
+  # shell command around an operator-supplied dataset name for the same reason and therefore needs
+  # the same answer. It was local to this file first, and the two providers immediately disagreed:
+  # the identical hostile name was refused here and accepted there.
+  inherit (import ../zfs-names.nix { inherit lib; }) safeZfsTreeName unsafeTreeNameMessage;
 
   # `zfs set sharenfs=<v> <tree>` per share -- tolerant (a tree whose pool
   # is not yet imported, e.g. a data pool before its own unlock, keeps its
