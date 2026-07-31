@@ -15,11 +15,34 @@
 let
   cfg = config.nixshare.server.nfs;
 
+  # `tree` here is an ATTRSET KEY (the dataset name), not an option value --
+  # unlike `val` (the sharenfs property string, already typed `str` and
+  # already shell-escaped below), the key has no `lib.types` attached to
+  # constrain it, and ZFS itself permits spaces and other shell
+  # metacharacters in a dataset name. Both interpolations of `tree` in
+  # `applyScript` used to be UNESCAPED (proven by eval: a declared dataset
+  # name containing `;` or a backtick is root shell injection into this
+  # oneshot's `script`). Fixed two ways, deliberately both -- defence in
+  # depth, not either/or:
+  #  - `safeZfsTreeName` rejects anything outside the character class a
+  #    ZFS dataset name actually needs, at BUILD time (see the `assertions`
+  #    entry in `config` below) -- a hostile name never gets this far;
+  #  - `lib.escapeShellArg` on every interpolation of `tree`, not just
+  #    `val`, is what keeps the generated script safe even if that
+  #    assertion is ever bypassed by a future refactor or a caller path
+  #    that skips module assertions.
+  safeZfsTreeName = tree: builtins.match "[A-Za-z0-9_.:/-]+" tree != null;
+
   # `zfs set sharenfs=<v> <tree>` per share -- tolerant (a tree whose pool
   # is not yet imported, e.g. a data pool before its own unlock, keeps its
-  # already-persisted property; the pool carries it).
+  # already-persisted property; the pool carries it). The `|| echo ...`
+  # fallback message passes `tree` to `echo` as ONE `escapeShellArg`-quoted
+  # argument (rather than interpolating it into a bash double-quoted
+  # string) precisely because a value emitted by `escapeShellArg` is only
+  # safe as a whole shell token by itself -- embedding it inside another
+  # quoted string would not carry the same guarantee.
   applyScript = lib.concatStringsSep "\n" (lib.mapAttrsToList (tree: val:
-    "zfs set sharenfs=${lib.escapeShellArg val} ${tree} || echo >&2 \"nfs-shares: ${tree} not ready, keeping persisted sharenfs\""
+    "zfs set sharenfs=${lib.escapeShellArg val} ${lib.escapeShellArg tree} || echo >&2 ${lib.escapeShellArg "nfs-shares: ${tree} not ready, keeping persisted sharenfs"}"
   ) cfg.sharenfs) + "\nzfs share -a || true\n";
 in
 {
@@ -44,6 +67,12 @@ in
         design note on definition-is-the-asset: build this attrset from
         your own client/tree model (rw addresses, squash, crossmnt, ...);
         this module only applies it and re-shares.
+
+        Each key is a ZFS dataset name and MUST match
+        `[A-Za-z0-9_.:/-]+` (enforced by an assertion in `config`, see
+        `safeZfsTreeName`) -- it is inlined into a root shell script, and
+        ZFS itself permits characters (including spaces) that would
+        otherwise make a declared name into shell injection.
       '';
     };
 
@@ -139,6 +168,24 @@ in
   };
 
   config = lib.mkIf cfg.enable {
+    # Reject a hostile dataset name at BUILD time -- see `safeZfsTreeName`
+    # above for the full reasoning. This is the type-level/eval-time half
+    # of the fix; `applyScript`'s `lib.escapeShellArg` on `tree` is the
+    # other half, and both exist deliberately (defence in depth).
+    assertions = lib.mapAttrsToList
+      (tree: _: {
+        assertion = safeZfsTreeName tree;
+        message = ''
+          nixshare.server.nfs.sharenfs."${tree}" is not a safe ZFS dataset
+          name -- it must match [A-Za-z0-9_.:/-]+. ZFS itself permits other
+          characters (including spaces), but this module inlines the name
+          into a root shell script (nfs-shares-apply.service), so anything
+          outside that class is refused here rather than risked
+          downstream.
+        '';
+      })
+      cfg.sharenfs;
+
     # Just the kernel nfsd -- NO /etc/exports. The shares live in the pool
     # as ZFS `sharenfs` properties (applied by nfs-shares-apply below); the
     # pool carries + serves them.

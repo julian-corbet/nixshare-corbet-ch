@@ -64,5 +64,123 @@
         });
 
       formatter = forAllSystems (system: (pkgsFor system).nixpkgs-fmt);
+
+      # ---------------------------------------------------------------
+      # Regression guard for the sharenfs dataset-name shell-injection
+      # fix in modules/providers/nfs-server.nix: `tree` (a `sharenfs`
+      # attrset KEY) used to be inlined into a root shell script
+      # unescaped, so a declared ZFS dataset name containing `;` or a
+      # backtick was root shell injection. The fix is genuinely
+      # two-layered (see that module's `safeZfsTreeName` comment):
+      #   (a) an eval-time assertion rejects a key outside
+      #       `[A-Za-z0-9_.:/-]+` before it goes anywhere -- this is
+      #       the type-level-shaped half (attrset KEYS have no
+      #       `lib.types` of their own to attach a `strMatching` to, so
+      #       an assertion is the closest equivalent NixOS idiom);
+      #   (b) `applyScript` itself wraps every interpolation of `tree`
+      #       in `lib.escapeShellArg`, independently of (a), so the
+      #       generated script stays safe even if (a) is ever bypassed.
+      #
+      # A PRIOR version of this check asserted ONLY
+      # `builtins.tryEval (...).config.system.build.toplevel .success`
+      # booleans on a "good" and a "bad" (hostile) name. That is a
+      # real test of layer (a) -- but it is BLIND to layer (b): a
+      # reviewer reverted `${lib.escapeShellArg tree}` back to bare
+      # `${tree}` at BOTH interpolation sites in applyScript (byte
+      # identical to the original vulnerable code) and `nix flake
+      # check` still reported this guard GREEN, because the hostile
+      # name in the "bad" case was rejected by assertion (a) before
+      # `system.build.toplevel` ever forced anything -- regardless of
+      # whether applyScript itself still escaped it. tryEval success
+      # booleans cannot see that difference; only the RENDERED SCRIPT
+      # TEXT can.
+      #
+      # So this check now does BOTH, as two independent assertions:
+      #   1. `goodEval`/`badEval` -- unchanged, still proves layer (a)
+      #      (assertion rejects the hostile key at eval time, an
+      #      ordinary key still evaluates fine).
+      #   2. `renderedScript == expectedScript` -- proves layer (b) on
+      #      its OWN, independently of (a). Reading
+      #      `.config.systemd.services.nfs-shares-apply.script`
+      #      directly (never `.system.build.toplevel`) does NOT force
+      #      `config.assertions` to be checked (verified by hand: a
+      #      hostile key reaches this string completely unmolested,
+      #      with no throw), so a hostile name used ONLY for this half
+      #      of the check reaches `applyScript`'s actual rendering
+      #      exactly as written -- proving the escaping on its own,
+      #      the exact layer the silent revert above removed.
+      #      `expectedScript` is built independently, from nixpkgs'
+      #      own `lib.escapeShellArg`, against the SAME hostile name
+      #      and value -- so this is a byte-exact comparison of
+      #      RENDERED COMMAND TEXT, not a success/failure boolean.
+      #
+      # `fileSystems."/"` / `boot.loader.grub.device` below are only
+      # there so `system.build.toplevel` evaluates without tripping the
+      # unrelated assertions every bare NixOS config carries.
+      # ---------------------------------------------------------------
+      checks = forAllSystems (system:
+        let
+          pkgs = pkgsFor system;
+
+          mkNfsServerEval = sharenfs: lib.nixosSystem {
+            inherit system;
+            modules = [
+              ./modules/providers/nfs-server.nix
+              {
+                fileSystems."/" = { device = "/dev/disk/by-label/nixos"; fsType = "ext4"; };
+                boot.loader.grub.device = "nodev";
+                nixshare.server.nfs = {
+                  enable = true;
+                  domain = "example.com";
+                  inherit sharenfs;
+                };
+              }
+            ];
+          };
+
+          # ---- layer (a): the eval-time assertion -----------------------
+          goodEval = builtins.tryEval
+            (mkNfsServerEval { "solid/shares/example" = "rw=@100.64.42.0/24"; }).config.system.build.toplevel;
+          badEval = builtins.tryEval
+            (mkNfsServerEval { "solid/shares/example; rm -rf /" = "rw=@100.64.42.0/24"; }).config.system.build.toplevel;
+
+          # ---- layer (b): the rendered applyScript text -----------------
+          # A hostile dataset name combining a `;` (command separator)
+          # AND a backtick (legacy command substitution) -- the two
+          # classic shell-injection vectors -- historically proven to
+          # actually execute `touch /tmp/PWNED_SEMI` and
+          # `touch /tmp/PWNED_TICK` as root against the pre-fix script.
+          hostileTree = "solid/shares/x; touch /tmp/PWNED_SEMI; touch `/tmp/PWNED_TICK`";
+          hostileVal = "rw=@100.64.42.0/24";
+
+          renderedScript =
+            (mkNfsServerEval { "${hostileTree}" = hostileVal; })
+              .config.systemd.services.nfs-shares-apply.script;
+
+          # Independently reconstructed expected rendering -- same shape
+          # applyScript is documented to produce, built with nixpkgs' own
+          # escaping primitive rather than by calling into the module's
+          # own (private, unexported) `applyScript` binding.
+          expectedScript =
+            "zfs set sharenfs=${lib.escapeShellArg hostileVal} ${lib.escapeShellArg hostileTree} || echo >&2 ${lib.escapeShellArg "nfs-shares: ${hostileTree} not ready, keeping persisted sharenfs"}"
+            + "\nzfs share -a || true\n";
+        in
+        {
+          nixshare-sharenfs-injection-guard =
+            if goodEval.success && !badEval.success && renderedScript == expectedScript
+            then pkgs.runCommand "nixshare-sharenfs-injection-guard" { } "touch $out"
+            else throw ''
+              nixshare sharenfs injection guard FAILED:
+                (a) ordinary dataset name evaluated ok         = ${lib.boolToString goodEval.success} (expected true)
+                (a) hostile dataset name rejected by assertion = ${lib.boolToString (!badEval.success)} (expected true)
+                (b) rendered applyScript for a hostile name matches
+                    the independently-expected, fully-escaped text = ${lib.boolToString (renderedScript == expectedScript)} (expected true)
+
+              --- (b) actual rendered script ---
+              ${renderedScript}
+              --- (b) expected rendered script ---
+              ${expectedScript}
+            '';
+        });
     };
 }
