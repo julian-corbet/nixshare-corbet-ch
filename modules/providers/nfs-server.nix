@@ -1,16 +1,11 @@
 # modules/providers/nfs-server.nix
 #
-# The NFS server side (README's documented "v2 addition"): kernel nfsd
-# (NFSv4-only), the idmapd Domain, firewall scoping, and a reconcile
-# oneshot that applies a caller-supplied ZFS `sharenfs` matrix to the
-# pool. Relocated verbatim from a private, ad-hoc "nixnas.nfs"-namespaced
-# module in the infra repo (2026-07-25) -- same systemd units, same
-# tuning, same firewall shape; the one real interface change the module
-# boundary forces is that the access matrix itself (which client reaches
-# which export, at what squash) can no longer be a relative-path import
-# of a private file, so it is now `cfg.sharenfs` / `cfg.domain`, supplied
-# by the caller (see README Quickstart) exactly like nixnas's own
-# lib/shares.nix already computed it.
+# The NFS server side: kernel nfsd (NFSv4-only), the idmapd Domain, firewall
+# scoping, and a reconcile oneshot that applies a caller-supplied ZFS
+# `sharenfs` matrix to the pool. The access matrix itself (which client
+# reaches which export, at what squash) is supplied by the caller as
+# `cfg.sharenfs` / `cfg.domain` (see README Quickstart) rather than baked
+# in, so this module never imports a host-specific file.
 #
 # Not paired with a `systemManagerModules` export (unlike the client-side
 # providers): `services.nfs.server`/`services.nfs.idmapd` are full NixOS

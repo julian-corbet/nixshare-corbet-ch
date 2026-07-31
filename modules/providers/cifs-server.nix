@@ -1,14 +1,10 @@
 # modules/providers/cifs-server.nix
 #
-# The CIFS/SMB server side (README's documented "v2 addition"): smbd +
-# ZFS `sharesmb`-driven usershares, nmbd/WSD/mDNS discovery, and a
-# reconcile oneshot that applies a caller-supplied list of `sharesmb`
-# trees to the pool. Relocated verbatim from a private, ad-hoc
-# "nixnas.smb"-namespaced module in the infra repo (2026-07-25) -- same
-# systemd units, same Samba tuning, same firewall/discovery shape; the
-# one real interface change the module boundary forces is that the list
-# of shared trees can no longer be a relative-path import of a private
-# file, so it is now `cfg.sharesmb`, supplied by the caller.
+# The CIFS/SMB server side: smbd + ZFS `sharesmb`-driven usershares,
+# nmbd/WSD/mDNS discovery, and a reconcile oneshot that applies a
+# caller-supplied list of `sharesmb` trees to the pool. The list of
+# shared trees is supplied by the caller as `cfg.sharesmb` rather than
+# baked in, so this module never imports a host-specific file.
 #
 # SMB needs REAL auth (unlike NFS's AUTH_SYS) -- provide it via
 # `smbpasswd` for each Unix user who should reach a share; this module
