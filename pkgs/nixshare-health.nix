@@ -143,11 +143,27 @@ writeShellApplication {
 
     # Fire the configured alert, if any. Never fatal: an alert channel being
     # down must not stop a recovery that is otherwise working.
+    #
+    # alert_command is a Nix-eval-time-trusted, already-shell-escaped command
+    # PREFIX (nixpush's own `mkSendCommand` helper -- see modules/core.nix's
+    # `watchdog.alertCommand` option -- is exactly what most deployments bake
+    # it from, and its own doc comment says so: "append your own quoted
+    # message"). The previous version here instead handed the message to a
+    # `sh -c "$alert_command" "nixshare-health" "$1"` subshell as a
+    # positional argument the command string never referenced, so it was
+    # silently dropped on every real alert -- nixpush's `send` errored
+    # "MESSAGE is required" and the push never went out, even though
+    # detection itself was working. Fixed to match nixshare-watchdog.nix's
+    # own send_alert, the sibling implementation of this exact contract:
+    # append the runtime message, `%q`-quoted, and eval the whole thing.
     notify() {
-      echo "nixshare-health: $1"
+      local message="$1"
+      echo "nixshare-health: $message"
       if [ -n "$alert_command" ]; then
-        ''${SHELL:-/bin/sh} -c "$alert_command" "nixshare-health" "$1" || \
+        # shellcheck disable=SC2086
+        if ! eval "$alert_command $(printf '%q' "$message")"; then
           echo "nixshare-health: alert command failed (continuing)" >&2
+        fi
       fi
     }
 
