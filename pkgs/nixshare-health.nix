@@ -43,6 +43,60 @@
 # ever attempted when the server is provably fine and the CLIENT is the
 # broken half -- the precise signature above.
 #
+# THE PROBE ITSELF HAD TWO BLIND SPOTS, both now fixed, both found the same
+# way: a real client ran degraded for a long time with the monitor ticking
+# the whole time and never once logging a bad probe.
+#
+#   1. A stat() on the mountpoint itself can be served entirely from the
+#      attribute cache (`actimeo`) without ever reaching the network, and on
+#      a host where something else keeps touching that same path -- a shell
+#      prompt, an editor, a file-watcher -- the cache entry can be kept
+#      perpetually warm, so the health probe's own stat() may go an entire
+#      incident without ever being the one to force a fresh RPC. Fixed by
+#      probing a name that is guaranteed not to exist: `lookupcache=positive`
+#      (this provider's own default -- see modules/providers/nfs.nix) caches
+#      only successful lookups, never negative ones, so a stat() against a
+#      nonexistent child of the mountpoint always reaches the wire.
+#
+#   2. Independently, a stat()-only probe cannot see a wedge that is scoped
+#      to READDIRPLUS specifically. Observed directly on a real client:
+#      plain stat()/read()/write() on an already-established mount kept
+#      working instantly for well over an hour while every operation that
+#      issues READDIRPLUS -- a directory listing, `git status`, a file
+#      manager's folder view -- hung indefinitely. No kernel log line on
+#      either end the entire time; only a reboot cleared it. A probe built
+#      from stat() alone is structurally incapable of detecting that class
+#      no matter how it is tuned. Fixed by adding a second, independent
+#      probe that actually lists the mountpoint (`ls -la`), so a wedge
+#      confined to READDIRPLUS shows up even when every stat() is fine.
+#
+# Curing this second class is not guaranteed -- the one real incident needed
+# a reboot even after manual intervention -- which is exactly why the
+# escalation ladder below already ends in "manual intervention needed... a
+# reboot clears client state unconditionally" rather than promising a fix.
+# What detection buys is the alert firing in minutes instead of the person
+# at the keyboard being the only sensor, for however long they tolerate it.
+#
+# HONEST LIMIT ON FIX 2: probe 2 lists the mountpoint itself, not a target
+# constructed to defeat caching the way probe 1's nonexistent name does.
+# `lookupcache` (probe 1's guarantee) governs LOOKUP caching only; directory
+# CONTENT is governed separately by `actimeo`/`acdirmax`, so if something
+# else lists that same mountpoint within the cache window, probe 2 can still
+# read from a warm directory-page cache instead of the wire. Closing that
+# fully means probing a target guaranteed fresh every tick -- e.g. a
+# just-created, uniquely-named subdirectory, listed, then removed -- which
+# was deliberately NOT done here: it turns a read-only probe into a
+# periodic write+delete against every live share this monitors, a different
+# risk profile that deserves its own sign-off rather than riding in on a
+# detection fix. Left as a known, stated gap rather than a silent one.
+#
+# ALSO NFS-SPECIFIC: both probes' cache-defeat reasoning rests on this
+# provider's `lookupcache=positive` default (modules/providers/nfs.nix).
+# `probe_ms` itself runs unconditionally against CIFS shares too (core
+# stays protocol-blind), but CIFS has no declared equivalent guarantee --
+# `modules/providers/cifs.nix` only exposes `cache=strict|loose` -- so the
+# "always reaches the wire" claim above is demonstrated for NFS only.
+#
 # WHY SHELL, NOT RUST: same carve-out as nixshare-watchdog (see its header).
 # This is a systemd *oneshot* on a timer -- one pass, process exits every
 # tick, no resident state. The little cross-tick state it does need
@@ -112,29 +166,57 @@ writeShellApplication {
       timeout 5 bash -c "exec 3<>/dev/tcp/$peer/$port" 2>/dev/null
     }
 
-    # Milliseconds for one cheap metadata op against the mountpoint. Prints
-    # the elapsed time; returns non-zero if the op itself failed or timed
-    # out (a timeout is the most degraded reading there is, so it counts as
-    # the full probe budget rather than as "no data").
+    # Milliseconds for TWO probes against the mountpoint -- see "THE PROBE
+    # ITSELF HAD TWO BLIND SPOTS" above for why it is two, not one. Prints
+    # the combined elapsed time; returns non-zero only if either probe was
+    # actually killed by its own timeout budget (a timeout is the most
+    # degraded reading there is, so it counts as the full probe budget
+    # rather than as "no data"). A clean, fast failure -- the negative
+    # stat's expected ENOENT -- is not a timeout and must not be treated
+    # as one, or every tick on a perfectly healthy share would read as
+    # maximally degraded.
     probe_ms() {
-      local mp="$1" start end rc
+      local mp="$1" start end rc1=0 rc2=0
       start=$(date +%s%N)
       # -k: follow SIGTERM with SIGKILL. HONEST LIMIT, stated rather than
-      # papered over: neither signal can end a stat() parked in an
+      # papered over: neither signal can end a syscall parked in an
       # UNINTERRUPTIBLE (D) kernel wait -- SIGKILL is queued but not delivered
       # until the task returns to userspace -- so against a truly hung mount
       # `timeout` itself does not return and this tick stalls. That is a
       # kernel-level constraint, not a scripting one. Backgrounding the probe
-      # and abandoning it would be WORSE, not better: an abandoned stat holds
-      # a reference on the wedged mount, and those references are exactly what
-      # keeps the nfs_client refcount above zero -- it would sabotage the one
-      # cure that works. The flock below bounds the damage to a single stuck
-      # process instead of one per tick.
-      timeout -k 5 "$probe_timeout" stat -c %i "$mp" >/dev/null 2>&1
-      rc=$?
+      # and abandoning it would be WORSE, not better: an abandoned syscall
+      # holds a reference on the wedged mount, and those references are
+      # exactly what keeps the nfs_client refcount above zero -- it would
+      # sabotage the one cure that works. The flock below bounds the damage
+      # to a single stuck process instead of one per tick.
+      #
+      # Probe 1: stat() a name that cannot exist. Never cache-served (see
+      # above) -- this is what proves the transport itself is alive, not
+      # just that a warm attribute-cache entry hasn't expired yet. The `||`
+      # is load-bearing under `set -e`: this stat is EXPECTED to fail
+      # (ENOENT) on every healthy tick, and that must not abort the script.
+      timeout -k 5 "$probe_timeout" stat -c %i "$mp/.nixshare-health-probe" >/dev/null 2>&1 || rc1=$?
+      # Probe 2: an actual directory listing. Deliberately NOT redundant
+      # with probe 1 -- this is what catches a wedge confined to
+      # READDIRPLUS while plain stat() keeps working, the failure class
+      # neither probe 1 nor the original single-stat probe can see.
+      timeout -k 5 "$probe_timeout" ls -la "$mp" >/dev/null 2>&1 || rc2=$?
       end=$(date +%s%N)
       echo $(( (end - start) / 1000000 ))
-      return $rc
+      # rc1 and rc2 are NOT interchangeable, because a healthy tick is
+      # expected to end each sub-probe differently. Probe 1's stat is
+      # expected to FAIL (ENOENT) every time -- that is the whole point --
+      # so only a timeout counts against it (124 = timeout's own TERM kill,
+      # 137 = the -k KILL follow-up). Probe 2's ls is expected to SUCCEED
+      # every time -- listing a mount that is actually up is not supposed to
+      # fail -- so ANY nonzero from it (ESTALE, EIO, a permission problem,
+      # not just a timeout) is a real signal and must count as degraded.
+      # Collapsing these into one shared check would silently reclassify a
+      # fast, genuine ls failure as a healthy tick.
+      if [ "$rc1" -eq 124 ] || [ "$rc1" -eq 137 ] || [ "$rc2" -ne 0 ]; then
+        return 1
+      fi
+      return 0
     }
 
     # Read a numeric counter from a state file, tolerating anything that is
@@ -515,7 +597,7 @@ writeShellApplication {
   '';
 
   meta = with lib; {
-    description = "Detect and cure a degraded-but-mounted NFS client (wedged SUNRPC transport state), which the stuck-automount watchdog cannot see";
+    description = "Detect and cure a degraded-but-mounted NFS client (a wedged SUNRPC transport, or a hang confined to READDIRPLUS), which the stuck-automount watchdog cannot see";
     license = licenses.mit;
     platforms = platforms.linux;
   };

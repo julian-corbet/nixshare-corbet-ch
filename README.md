@@ -196,8 +196,24 @@ on its own.
 `nixshare.health` probes each **already-established** mount on a
 timer, and escalates only on a sustained stall:
 
-1. **Probe** — one `stat()` per mounted share, hard-bounded by
-   `probeTimeoutSec`. Slower than `degradedLatencyMs` counts as degraded.
+1. **Probe** — two independent checks per mounted share, each hard-bounded by
+   `probeTimeoutSec`; slower than `degradedLatencyMs` on *either* counts as
+   degraded. The first is a `stat()` of a name guaranteed not to exist, so it
+   can never be served from the attribute cache (`lookupcache=positive`
+   caches only successful lookups) — without this, a mountpoint something
+   else keeps touching can stay cache-warm for an entire incident and the
+   probe never forces a live RPC at all. The second is an actual directory
+   listing (`ls -la`) of the mountpoint, because a wedge confined to
+   READDIRPLUS has been observed leaving plain `stat()`/read/write on the
+   same mount working normally for hours — a probe built from `stat()`
+   alone cannot see that class regardless of tuning. The second check is a
+   narrower guarantee than the first: it targets the mountpoint itself
+   rather than a target constructed to defeat caching, so on a share
+   something else lists within `actimeo`, it can still read from a warm
+   directory-page cache — a known, stated gap, not a silent one (see
+   `pkgs/nixshare-health.nix`'s header). Both checks assume this provider's
+   `lookupcache=positive`/`actimeo` defaults; CIFS shares run the same
+   probe without an equivalent documented guarantee.
 2. **Hysteresis** — `consecutiveFailures` bad ticks in a row before acting.
    A big copy, a cold cache or a scrub on the server produces one slow tick,
    never a sustained one; the client wedge never clears on its own, so

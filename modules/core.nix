@@ -337,8 +337,8 @@ in
         description = ''
           How often to probe each established mount. Much slower than the
           watchdog's poll on purpose: this looks for a SUSTAINED stall, not
-          a moment of it, and every tick costs one real metadata round-trip
-          per mounted share.
+          a moment of it, and every tick costs two real round-trips per
+          mounted share (see `degradedLatencyMs`).
         '';
       };
 
@@ -346,19 +346,23 @@ in
         type = types.ints.positive;
         default = 500;
         description = ''
-          A single `stat()` on the mountpoint slower than this counts the
-          probe as degraded. Healthy is single-digit milliseconds even over
-          a WireGuard overlay; the real incident this defends against
-          measured 3263 ms for one stat. 500 leaves two orders of magnitude
-          of headroom over healthy while still catching that by a factor of
-          six, so ordinary load spikes do not register.
+          Each tick runs TWO checks per share -- a `stat()` guaranteed to
+          reach the server (never cache-served) and a directory listing
+          (catches a wedge confined to READDIRPLUS that the stat alone
+          cannot see; see pkgs/nixshare-health.nix). Either one taking
+          longer than this counts the probe as degraded. Healthy is
+          single-digit milliseconds even over a WireGuard overlay; the real
+          incident this defends against measured 3263 ms for one stat. 500
+          leaves two orders of magnitude of headroom over healthy while
+          still catching that by a factor of six, so ordinary load spikes
+          do not register.
         '';
       };
 
       probeTimeoutSec = mkOption {
         type = types.ints.positive;
         default = 10;
-        description = "Hard bound on a single probe, so a fully-hung mount cannot wedge the monitor itself. A timeout counts as the most degraded reading possible.";
+        description = "Hard bound on EACH of the tick's two sub-probes (see `degradedLatencyMs`), so a fully-hung mount cannot wedge the monitor itself -- worst case one tick is bounded by twice this value. A timeout counts as the most degraded reading possible.";
       };
 
       consecutiveFailures = mkOption {
