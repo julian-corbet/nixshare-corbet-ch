@@ -224,7 +224,7 @@ nix build .#nixshare-watchdog</code></pre>
     <div class="table-scroll">
       <table>
         <tbody>
-          <tr><td><code>shares.&lt;name&gt;.peer</code></td><td>The server, by name &mdash; conventionally a <code>services.nixnet.peers.&lt;name&gt;</code> entry, but any NSS-resolvable name works.</td></tr>
+          <tr><td><code>shares.&lt;name&gt;.peer</code></td><td>The server, by name &mdash; conventionally a <code>nixnet.peers.&lt;name&gt;</code> entry, but any NSS-resolvable name works.</td></tr>
           <tr><td><code>shares.&lt;name&gt;.automountTimeoutSec</code></td><td>Per-share watchdog threshold, default <code>30</code>. Must exceed <code>establishTimeoutSec</code> (asserted).</td></tr>
           <tr><td><code>establishTimeoutSec</code></td><td>Every provider's <code>.mount</code> unit <code>TimeoutSec=</code>, default <code>15</code>. Bounds a normal failure fast; does not by itself free a genuinely stuck attempt.</td></tr>
           <tr><td><code>shares.&lt;name&gt;.cacheSettings</code></td><td>Freeform protocol-specific tuning, opaque to core. NFS: <code>nfsvers</code>, <code>timeo</code>, <code>retrans</code>, <code>actimeo</code>, <code>lookupcache</code>, <code>nconnect</code>, <code>fsc</code>. CIFS: <code>vers</code>, <code>cache</code>.</td></tr>

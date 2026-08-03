@@ -22,7 +22,7 @@
 # address-resolution logic of its own. It builds `what = "<peer>:<path>"`
 # (NFS) / `what = "//<peer>/<path>"` (CIFS) and lets ordinary NSS resolve
 # `<peer>` -- which is exactly what a github:julian-corbet/nixnet-corbet-ch
-# `services.nixnet.peers.<name>.hostnames` entry publishes into a
+# `nixnet.peers.<name>.hostnames` entry publishes into a
 # live-managed /etc/hosts. nixshare works identically with a peer name
 # resolved by nixnet, by plain DNS, or by a hand-edited /etc/hosts line --
 # it has no idea which, and doesn't need to.
@@ -51,7 +51,7 @@ let
         description = ''
           The share's server, named -- NOT a raw IP/hostname literal.
           Conventionally a github:julian-corbet/nixnet-corbet-ch
-          `services.nixnet.peers.<name>.hostnames` entry, so this share's
+          `nixnet.peers.<name>.hostnames` entry, so this share's
           server address inherits nixnet's LAN/overlay failover for free;
           nixshare itself just concatenates this string into `what =`
           and lets NSS (files-then-DNS) resolve it. Works with any
@@ -285,7 +285,7 @@ in
         type = types.nullOr types.str;
         default = null;
         example = literalExpression ''
-          config.services.nixpush.lib.mkSendCommand { channel = "alerts"; priority = "urgent"; }
+          config.nixpush.lib.mkSendCommand { channel = "alerts"; priority = "urgent"; }
         '';
         description = ''
           A full shell command PREFIX (already including any flags,
@@ -297,7 +297,7 @@ in
           nixshare has no hard dependency on
           github:julian-corbet/nixpush-corbet-ch -- any shell command
           that accepts a trailing message string works -- but
-          `config.services.nixpush.lib.mkSendCommand { ... }` (nixpush's
+          `config.nixpush.lib.mkSendCommand { ... }` (nixpush's
           own Nix-level helper, see its README) is the intended, tested
           way to fill this in; see this repo's own README Quickstart for
           a worked example.

@@ -61,11 +61,11 @@ nixshare = {
   # `watchdog.alertCommand`'s own option doc), this is just the intended
   # pairing.
   watchdog.alertCommand =
-    config.services.nixpush.lib.mkSendCommand { channel = "alerts"; priority = "urgent"; };
+    config.nixpush.lib.mkSendCommand { channel = "alerts"; priority = "urgent"; };
 
   shares.example = {
     protocol = "nfs";
-    peer = "storage-host"; # a services.nixnet.peers."storage-host" entry -- see below
+    peer = "storage-host"; # a nixnet.peers."storage-host" entry -- see below
     remotePath = "/export/example";
     mountpoint = "/mnt/example";
     cacheSettings = {
@@ -87,8 +87,8 @@ nixshare = {
 # see github:julian-corbet/nixnet-corbet-ch's own README for the full
 # option surface. nixshare only needs the name to already be
 # NSS-resolvable; it neither requires nor knows about nixnet directly.
-services.nixnet.enable = true;
-services.nixnet.peers."storage-host" = {
+nixnet.enable = true;
+nixnet.peers."storage-host" = {
   hostnames = [ "storage-host" ];
   transports = [
     { address = "192.0.2.10"; priority = 10;
@@ -276,7 +276,7 @@ them would have made recovery impossible while looking like it ran.
   `nfs-provider`/`cifs-provider` module imported (asserted).
 - `shares.<name>.peer` — a name, not a raw address; conventionally a
   [nixnet](https://github.com/julian-corbet/nixnet-corbet-ch)
-  `services.nixnet.peers.<name>` entry, but any NSS-resolvable name works.
+  `nixnet.peers.<name>` entry, but any NSS-resolvable name works.
 - `shares.<name>.remotePath` — NFS export path, or CIFS share name (no
   leading slash).
 - `shares.<name>.mountpoint` — local mount point.
