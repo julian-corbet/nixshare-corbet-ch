@@ -140,9 +140,9 @@
 
           # ---- layer (a): the eval-time assertion -----------------------
           goodEval = builtins.tryEval
-            (mkNfsServerEval { "solid/shares/example" = "rw=@100.64.42.0/24"; }).config.system.build.toplevel;
+            (mkNfsServerEval { "solid/shares/example" = "rw=@100.64.99.0/24"; }).config.system.build.toplevel;
           badEval = builtins.tryEval
-            (mkNfsServerEval { "solid/shares/example; rm -rf /" = "rw=@100.64.42.0/24"; }).config.system.build.toplevel;
+            (mkNfsServerEval { "solid/shares/example; rm -rf /" = "rw=@100.64.99.0/24"; }).config.system.build.toplevel;
 
           # ---- layer (b): the rendered applyScript text -----------------
           # A hostile dataset name combining a `;` (command separator)
@@ -151,7 +151,7 @@
           # actually execute `touch /tmp/PWNED_SEMI` and
           # `touch /tmp/PWNED_TICK` as root against the pre-fix script.
           hostileTree = "solid/shares/x; touch /tmp/PWNED_SEMI; touch `/tmp/PWNED_TICK`";
-          hostileVal = "rw=@100.64.42.0/24";
+          hostileVal = "rw=@100.64.99.0/24";
 
           renderedScript =
             (mkNfsServerEval { "${hostileTree}" = hostileVal; })
