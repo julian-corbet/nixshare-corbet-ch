@@ -43,6 +43,7 @@ is wedged and reach for `sudo umount -f -l` themselves.
         nixshare.nixosModules.default # core: schema + watchdog, zero providers
         nixshare.nixosModules.nfs-provider
         nixshare.nixosModules.cifs-provider
+        nixshare.nixosModules.fscache-provider # only when any NFS share uses fsc
         ./configuration.nix
       ];
     };
@@ -70,7 +71,7 @@ nixshare = {
     mountpoint = "/mnt/example";
     cacheSettings = {
       actimeo = "60";
-      fsc = "true"; # persistent local cachefilesd cache -- PER-PEER, see below
+      fsc = "true"; # persistent local cachefilesd cache -- per share, see below
     };
   };
 
@@ -81,6 +82,13 @@ nixshare = {
     mountpoint = "/mnt/backups";
     credentialsFile = "/run/secrets/nixshare-backups.cred"; # username=/password=, sops/agenix-rendered
   };
+};
+
+# `fsc` needs a local cache daemon. The NixOS provider uses NixOS's native
+# cachefilesd service; a system-manager host uses the matching adapter below.
+nixshare.fscache = {
+  enable = true;
+  cacheDir = "/var/cache/fscache";
 };
 
 # The peer named above, so "storage-host" inherits LAN/overlay failover --
@@ -269,6 +277,10 @@ them would have made recovery impossible while looking like it ran.
 
 - `enable` — turn nixshare on: renders `/etc/nixshare/watchdog.json` and
   starts the watchdog timer.
+- `archPackages` — read-only package intent for a system-manager host's
+  reconciler. It is empty unless an active client provider needs packages;
+  do not hand-maintain `nfs-utils`, `cifs-utils`, or `cachefilesd` alongside
+  it.
 - `establishTimeoutSec` (default `15`) — every provider's `.mount` unit
   `TimeoutSec=`. Bounds a normal failure fast; does not by itself free a
   genuinely stuck attempt (see [How the watchdog works](#how-the-watchdog-works)).
@@ -347,6 +359,15 @@ three concurrent recursive greps put >1000 `kworker/uNN:M-fscache` threads
 into D-state at load average 341. Cache large files you re-read; do not
 cache a source tree you mostly walk.
 
+`fscache-provider` adds `nixshare.fscache`: `enable`, `cacheDir`, `tag`,
+and the `watermarks.{brun,bcull,bstop,frun,fcull,fstop}` percentages. It
+asserts that the run/cull/stop bands are ordered correctly, loads the
+`cachefiles` kernel module, and makes a share that asks for `fsc` fail
+evaluation unless this daemon is enabled. NixOS uses its native
+`services.cachefilesd` module; system-manager declares `/etc/cachefilesd.conf`
+and reconciles Arch's cachefilesd unit after the host package reconciler has
+installed it.
+
 `modules/providers/cifs.nix` — recognized `cacheSettings` keys: `vers`
 (default `3.1.1`), `cache` (default `strict`). Falls back to the `guest`
 mount option when `credentialsFile` is unset.
@@ -364,11 +385,11 @@ follows.
 
 ## Non-NixOS hosts (via `system-manager`)
 
-`nixosModules.core`/`.nfs-provider`/`.cifs-provider` need a real NixOS
-host. For a non-NixOS Linux box applying config with
+`nixosModules.*` providers use NixOS-native filesystem and cache service
+options. For a non-NixOS Linux box applying config with
 [numtide/system-manager](https://github.com/numtide/system-manager)
-instead, import `systemManagerModules.*` instead — same files, same
-schema:
+instead, import `systemManagerModules.*` instead — the same schema with
+matching platform adapters:
 
 ```nix
 {
@@ -377,19 +398,28 @@ schema:
 imports = [
   inputs.nixshare.systemManagerModules.core
   inputs.nixshare.systemManagerModules.nfs-provider
+  inputs.nixshare.systemManagerModules.cifs-provider
+  inputs.nixshare.systemManagerModules.fscache-provider
 ];
 nixshare.enable = true;
+nixshare.fscache.enable = true;
+
+# Nixshare declares intent; the host's package reconciler owns pacman.
+nixarch.packages.pacman = config.nixshare.archPackages;
+
+# Guarantee the foreign package unit exists before nixshare enables/restarts it.
+systemd.services.nixshare-cachefilesd-reconcile.after = [
+  "nixarch-packages-reconcile.service"
+];
 # ... same options as above
 ```
 
-nixshare only ever touches `environment.etc`, `systemd.services`/`.timers`/
-`.mounts`/`.automounts`, and a rendered JSON file — none of it depends on
-NixOS-only primitives (no `boot.kernel.sysctl`, no activation scripts, no
-kernel command-line parameters), the same portability argument nixnet's
-own README makes for its core module. This hasn't yet been confirmed
-against a real `system-manager`-applied host for the `systemd.mounts`/
-`.automounts` surface specifically — flagged explicitly in
-`experiments/README.md` #004 rather than silently assumed.
+The system-manager backend writes only declarative `/etc` state and systemd
+units. It never runs `pacman` itself: that boundary lets the host keep one
+package transaction/reconciliation policy. Its FS-Cache bridge explicitly
+enables and restarts the distribution-owned cachefilesd unit, so package
+installation, configuration, kernel-module loading, and daemon lifecycle all
+converge from Git on every activation.
 
 ## Security
 
@@ -414,10 +444,12 @@ same privilege level any ordinary `fstab`-driven mount runs at.
 
 | Path | What |
 |---|---|
-| `flake.nix` | `nixosModules.core`/`.nfs-provider`/`.cifs-provider`/`.default`; same trio under `systemManagerModules.*`; `packages.nixshare-watchdog` |
+| `flake.nix` | Core plus NFS, CIFS, and FS-Cache client providers for NixOS and system-manager; NixOS-only export providers; checks and packages |
 | `modules/core.nix` | `shares`/`watchdog` schema, provider registry, watchdog timer + JSON render |
 | `modules/providers/nfs.nix` | NFS `systemd.mounts`/`.automounts` generation |
 | `modules/providers/cifs.nix` | CIFS `systemd.mounts`/`.automounts` generation |
+| `modules/providers/fscache.nix` | Portable FS-Cache policy schema and package intent |
+| `modules/nixos/`, `modules/system-manager/` | Plane-specific native filesystem/cache implementations |
 | `pkgs/nixshare-watchdog.nix` | The watchdog script itself (real logic, see "How the watchdog works") |
 | `experiments/` | Throwaway trials, dated Question/Hypothesis/Method/Status entries |
 | `studies/` | Write-ups that changed a decision |
@@ -527,8 +559,8 @@ configured at all.
 
 ## Status
 
-The core schema, all four providers (client nfs/cifs, server nfs/cifs),
-and the watchdog are implemented for real per the settled design — real
+The core schema, client NFS/CIFS/FS-Cache providers, two server providers
+(NFS/CIFS), and the watchdog are implemented for real per the settled design — real
 `systemd.mounts`/`.automounts` generation, a real force-lazy-unmount
 watchdog with genuine stuck-attempt detection logic, real `services.nfs.server`/
 `services.samba` exports, not stubs. The server-side providers are a

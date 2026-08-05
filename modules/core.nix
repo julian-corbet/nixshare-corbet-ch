@@ -154,7 +154,15 @@ let
   # share that silently never gets a mount unit.
   # ---------------------------------------------------------------------
   providerRegistryType = types.submodule {
-    options.enable = mkOption { type = types.bool; default = false; };
+    options = {
+      enable = mkOption { type = types.bool; default = false; };
+      archPackages = mkOption {
+        type = types.listOf types.str;
+        default = [ ];
+        internal = true;
+        description = "Arch package intent contributed by this provider when enabled.";
+      };
+    };
   };
 
   # Single-level `or` on purpose -- see nixpush's modules/default.nix
@@ -164,6 +172,10 @@ let
   # guards the FINAL attribute access, not the path to get there.
   # Falling back to a whole default record first sidesteps that.
   providerEnabled = protocol: (cfg.providers.${protocol} or { enable = false; }).enable;
+
+  providerArchPackages = concatMap
+    (provider: if provider.enable then provider.archPackages else [ ])
+    (attrValues cfg.providers);
 
   # ---------------------------------------------------------------------
   # Watchdog config render (design note above package.nix's own header
@@ -236,6 +248,18 @@ in
 {
   options.nixshare = {
     enable = mkEnableOption "nixshare declarative NFS/CIFS shares, with a stuck-automount watchdog and a degraded-mount health monitor";
+
+    archPackages = mkOption {
+      type = types.listOf types.str;
+      readOnly = true;
+      description = ''
+        Official Arch package names required by the enabled client providers.
+        nixshare deliberately publishes intent instead of invoking a package
+        manager: a system-manager host must wire this to its own reconciler,
+        for example `nixarch.packages.pacman = config.nixshare.archPackages`.
+        NixOS backends use native filesystem and service options instead.
+      '';
+    };
 
     establishTimeoutSec = mkOption {
       type = types.ints.positive;
@@ -446,6 +470,8 @@ in
   };
 
   config = mkIf cfg.enable {
+    nixshare.archPackages = unique providerArchPackages;
+
     assertions =
       (
         let mountpoints = mapAttrsToList (_: s: s.mountpoint) cfg.shares;

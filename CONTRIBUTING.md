@@ -5,7 +5,10 @@ README.md's design note on why these are two providers under one schema
 rather than one table with a discriminator), so this is a much thinner
 document than a project with an open provider registry — there's no
 plugin ecosystem to onboard. It's still worth writing down what "a
-provider" means here, for anyone touching `modules/providers/`.
+provider" means here, for anyone touching `modules/providers/`. FS-Cache
+is an NFS-client adjunct rather than a third share protocol: its shared
+policy schema lives in `modules/providers/fscache.nix`, while each platform
+adapter owns the native daemon lifecycle.
 
 ## Ground rules
 
@@ -48,6 +51,16 @@ a NixOS/system-manager module that, in its `config` block:
 
 That's the entire contract. A third protocol (say, a future `sshfs`
 provider) would follow the same three steps.
+
+## FS-Cache provider boundary
+
+`fscache-provider` does not create mounts. It supplies the local daemon and
+kernel capability required by NFS shares that set `cacheSettings.fsc =
+"true"`, plus the Arch package intent for a system-manager host's own
+reconciler. Keep storage policy — a Btrfs subvolume, quota, dedicated mount,
+or any other host-specific backing-store guarantee — in the consuming host.
+The public module may require an absolute cache directory and validate daemon
+watermarks, but must not assume a particular filesystem or layout.
 
 ## License
 

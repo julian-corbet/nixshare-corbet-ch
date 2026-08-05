@@ -41,6 +41,10 @@ in
 {
   config = mkIf (cfg.enable && cifsShares != { }) {
     nixshare.providers.cifs.enable = true;
+    # See nfs.nix: on a system-manager host the owner of the package
+    # transaction consumes this intent. NixOS gets native filesystem support
+    # from its cifs-provider wrapper.
+    nixshare.providers.cifs.archPackages = [ "cifs-utils" ];
 
     systemd.mounts = mapAttrsToList
       (_: s: {

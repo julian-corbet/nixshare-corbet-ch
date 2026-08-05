@@ -13,6 +13,8 @@ let
   cfg = config.nixshare;
 
   nfsShares = filterAttrs (_: s: s.protocol == "nfs") cfg.shares;
+  fscShares = filterAttrs (_: s: (s.cacheSettings.fsc or "false") == "true") nfsShares;
+  fscacheEnabled = (cfg.fscache or { enable = false; }).enable;
 
   # `cacheSettings` is opaque freeform at the core schema level (see
   # core.nix) -- this is where those keys actually get interpreted, with
@@ -107,6 +109,11 @@ in
 
   config = mkIf (cfg.enable && nfsShares != { }) {
     nixshare.providers.nfs.enable = true;
+    # The system-manager backend intentionally only publishes this intent.
+    # Its host-owned package reconciler performs the actual pacman action;
+    # see README.md's non-NixOS section. The NixOS wrapper uses
+    # boot.supportedFilesystems instead.
+    nixshare.providers.nfs.archPackages = [ "nfs-utils" ];
 
     # Two mechanisms on purpose, because neither alone is sufficient:
     # modprobe.d applies only when the module is LOADED (so it covers every
@@ -172,7 +179,17 @@ in
     # NFSv4 pseudo-root is the obvious suspect but was not proven. If you
     # see unexplained fsc on a share, remount it alone and re-check.)
     assertions =
-      let
+      [
+        {
+          assertion = fscShares == { } || fscacheEnabled;
+          message = ''
+            At least one NFS share sets cacheSettings.fsc = "true", but
+            nixshare.fscache.enable is false or the fscache provider is not
+            imported. Import nixshare's fscache-provider and enable its local
+            cache daemon before requesting persistent NFS caching.
+          '';
+        }
+      ] ++ (let
         fscOf = s: (opt s "fsc" "false") == "true";
         under = a: b: a.peer == b.peer
           && a.mountpoint != b.mountpoint
@@ -199,7 +216,7 @@ in
             actually have it.
           '';
         })
-        nfsShares;
+        nfsShares);
 
     systemd.mounts = mapAttrsToList
       (_: s: {

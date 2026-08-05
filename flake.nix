@@ -25,8 +25,9 @@
       # ---------------------------------------------------------------
       nixosModules.core = ./modules/core.nix;
       nixosModules.default = self.nixosModules.core;
-      nixosModules.nfs-provider = ./modules/providers/nfs.nix;
-      nixosModules.cifs-provider = ./modules/providers/cifs.nix;
+      nixosModules.nfs-provider = ./modules/nixos/nfs.nix;
+      nixosModules.cifs-provider = ./modules/nixos/cifs.nix;
+      nixosModules.fscache-provider = ./modules/nixos/fscache.nix;
 
       # ---------------------------------------------------------------
       # Server side (README's documented "v2 addition"): NFS/CIFS
@@ -52,8 +53,9 @@
       # ---------------------------------------------------------------
       systemManagerModules.core = ./modules/core.nix;
       systemManagerModules.default = self.systemManagerModules.core;
-      systemManagerModules.nfs-provider = ./modules/providers/nfs.nix;
-      systemManagerModules.cifs-provider = ./modules/providers/cifs.nix;
+      systemManagerModules.nfs-provider = ./modules/system-manager/nfs.nix;
+      systemManagerModules.cifs-provider = ./modules/system-manager/cifs.nix;
+      systemManagerModules.fscache-provider = ./modules/system-manager/fscache.nix;
 
       packages = forAllSystems (system:
         let pkgs = pkgsFor system; in
@@ -164,6 +166,52 @@
           expectedScript =
             "zfs set sharenfs=${lib.escapeShellArg hostileVal} ${lib.escapeShellArg hostileTree} || echo >&2 ${lib.escapeShellArg "nfs-shares: ${hostileTree} not ready, keeping persisted sharenfs"}"
             + "\nzfs share -a || true\n";
+
+          # The client contract is deliberately tested separately from the
+          # server injection guard above. It proves that importing all three
+          # NixOS providers (a) makes both mount helpers/kernel support part
+          # of the NixOS generation, (b) enables the native cachefilesd
+          # service when an NFS share requests `fsc`, and (c) publishes the
+          # matching Arch package intent for system-manager consumers.
+          clientEval = lib.nixosSystem {
+            inherit system;
+            modules = [
+              ./modules/core.nix
+              ./modules/nixos/nfs.nix
+              ./modules/nixos/cifs.nix
+              ./modules/nixos/fscache.nix
+              {
+                fileSystems."/" = { device = "/dev/disk/by-label/nixos"; fsType = "ext4"; };
+                boot.loader.grub.device = "nodev";
+                nixshare = {
+                  enable = true;
+                  fscache.enable = true;
+                  shares = {
+                    example = {
+                      protocol = "nfs";
+                      peer = "storage-host";
+                      remotePath = "/export/example";
+                      mountpoint = "/mnt/example";
+                      cacheSettings.fsc = "true";
+                    };
+                    backup = {
+                      protocol = "cifs";
+                      peer = "storage-host";
+                      remotePath = "backup";
+                      mountpoint = "/mnt/backup";
+                    };
+                  };
+                };
+              }
+            ];
+          };
+
+          clientContractOk =
+            lib.all (package: lib.elem package clientEval.config.nixshare.archPackages)
+              [ "nfs-utils" "cifs-utils" "cachefilesd" ]
+            && clientEval.config.boot.supportedFilesystems ? nfs
+            && clientEval.config.boot.supportedFilesystems ? cifs
+            && clientEval.config.services.cachefilesd.enable;
         in
         {
           nixshare-sharenfs-injection-guard =
@@ -181,6 +229,11 @@
               --- (b) expected rendered script ---
               ${expectedScript}
             '';
+
+          nixshare-client-provider-contract =
+            if clientContractOk
+            then pkgs.runCommand "nixshare-client-provider-contract" { } "touch $out"
+            else throw "nixshare client provider contract FAILED";
         });
     };
 }
