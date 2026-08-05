@@ -208,7 +208,9 @@
 
           clientContractOk =
             lib.all (package: lib.elem package clientEval.config.nixshare.archPackages)
-              [ "nfs-utils" "cifs-utils" "cachefilesd" ]
+              [ "nfs-utils" "cifs-utils" ]
+            && !lib.elem "cachefilesd" clientEval.config.nixshare.archPackages
+            && lib.elem "cachefilesd" clientEval.config.nixshare.aurPackages
             && clientEval.config.boot.supportedFilesystems ? nfs
             && clientEval.config.boot.supportedFilesystems ? cifs
             && clientEval.config.services.cachefilesd.enable;
@@ -254,7 +256,9 @@
 
           systemManagerContractOk =
             lib.all (package: lib.elem package systemManagerClientEval.config.nixshare.archPackages)
-              [ "nfs-utils" "cifs-utils" "cachefilesd" ]
+              [ "nfs-utils" "cifs-utils" ]
+            && !lib.elem "cachefilesd" systemManagerClientEval.config.nixshare.archPackages
+            && lib.elem "cachefilesd" systemManagerClientEval.config.nixshare.aurPackages
             && lib.elem "host-packages.service"
               systemManagerClientEval.config.systemd.services.nixshare-package-ownership.after
             && lib.elem "nixshare-package-ownership.service"

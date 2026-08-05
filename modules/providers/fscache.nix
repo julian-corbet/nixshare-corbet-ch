@@ -72,7 +72,7 @@ in
     # The package transaction remains the operating system's job. The
     # system-manager adapter publishes this list; the NixOS adapter uses the
     # native services.cachefilesd module, whose unit closes over the package.
-    nixshare.providers.fscache.archPackages = [ "cachefilesd" ];
+    nixshare.providers.fscache.aurPackages = [ "cachefilesd" ];
 
     assertions = [
       {

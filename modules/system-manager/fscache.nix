@@ -2,8 +2,9 @@
 #
 # cachefilesd is an Arch-owned package and unit. This module owns the desired
 # configuration and lifecycle, while the consuming host maps
-# nixshare.archPackages to its package reconciler. That keeps nixshare free of
-# a hard dependency on any particular Arch package manager module.
+# nixshare's official-repository and AUR package intent to its package
+# reconciler. That keeps nixshare free of a hard dependency on any particular
+# Arch package manager module.
 { config, lib, ... }:
 
 let

@@ -56,7 +56,7 @@ provider) would follow the same three steps.
 
 `fscache-provider` does not create mounts. It supplies the local daemon and
 kernel capability required by NFS shares that set `cacheSettings.fsc =
-"true"`, plus the Arch package intent for a system-manager host's own
+"true"`, plus the AUR package intent for a system-manager host's own
 reconciler. The system-manager core marks those selected packages explicit
 after that host-owned transaction; it must never install, remove, or replace a
 host's package reconciler. Keep storage policy — a Btrfs subvolume, quota,

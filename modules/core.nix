@@ -160,7 +160,13 @@ let
         type = types.listOf types.str;
         default = [ ];
         internal = true;
-        description = "Arch package intent contributed by this provider when enabled.";
+        description = "Official-Arch package intent contributed by this provider when enabled.";
+      };
+      aurPackages = mkOption {
+        type = types.listOf types.str;
+        default = [ ];
+        internal = true;
+        description = "AUR package intent contributed by this provider when enabled.";
       };
     };
   };
@@ -175,6 +181,10 @@ let
 
   providerArchPackages = concatMap
     (provider: if provider.enable then provider.archPackages else [ ])
+    (attrValues cfg.providers);
+
+  providerAurPackages = concatMap
+    (provider: if provider.enable then provider.aurPackages else [ ])
     (attrValues cfg.providers);
 
   # ---------------------------------------------------------------------
@@ -257,6 +267,19 @@ in
         nixshare deliberately publishes intent instead of invoking a package
         manager: a system-manager host must wire this to its own reconciler,
         for example `nixarch.packages.pacman = config.nixshare.archPackages`.
+        NixOS backends use native filesystem and service options instead.
+      '';
+    };
+
+    aurPackages = mkOption {
+      type = types.listOf types.str;
+      readOnly = true;
+      description = ''
+        AUR package names required by the enabled client providers.
+        nixshare deliberately publishes intent instead of invoking a package
+        manager: a system-manager host must wire this to the AUR half of its
+        own reconciler, for example
+        `nixarch.packages.aur = config.nixshare.aurPackages`.
         NixOS backends use native filesystem and service options instead.
       '';
     };
@@ -471,6 +494,7 @@ in
 
   config = mkIf cfg.enable {
     nixshare.archPackages = unique providerArchPackages;
+    nixshare.aurPackages = unique providerAurPackages;
 
     assertions =
       (

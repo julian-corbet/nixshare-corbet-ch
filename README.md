@@ -277,10 +277,12 @@ them would have made recovery impossible while looking like it ran.
 
 - `enable` — turn nixshare on: renders `/etc/nixshare/watchdog.json` and
   starts the watchdog timer.
-- `archPackages` — read-only package intent for a system-manager host's
-  reconciler. It is empty unless an active client provider needs packages;
-  do not hand-maintain `nfs-utils`, `cifs-utils`, or `cachefilesd` alongside
-  it.
+- `archPackages` — read-only official-Arch package intent for a
+  system-manager host's Pacman reconciler. It is empty unless an active client
+  provider needs packages; do not hand-maintain `nfs-utils` or `cifs-utils`
+  alongside it.
+- `aurPackages` — read-only AUR package intent for the AUR half of that
+  reconciler. `cachefilesd` belongs here, not in an official-repository list.
 - `establishTimeoutSec` (default `15`) — every provider's `.mount` unit
   `TimeoutSec=`. Bounds a normal failure fast; does not by itself free a
   genuinely stuck attempt (see [How the watchdog works](#how-the-watchdog-works)).
@@ -407,13 +409,15 @@ nixshare.fscache.enable = true;
 # The host reconciler installs packages; Nixshare then marks its selected
 # packages explicit so unrelated dependency changes cannot remove them.
 nixarch.packages.pacman = config.nixshare.archPackages;
+nixarch.packages.aur = config.nixshare.aurPackages;
 nixshare.systemManager.packageReconcilerUnit = "nixarch-packages-reconcile.service";
 # ... same options as above
 ```
 
 The system-manager backend writes only declarative `/etc` state and systemd
-units. The host owns the package transaction, while Nixshare's idempotent
-ownership unit records its selected packages as explicit after that transaction.
+units. The host owns the official-repository and AUR package transactions,
+while Nixshare's idempotent ownership unit records its selected packages as
+explicit after that transaction.
 Its FS-Cache bridge then enables and restarts the distribution-owned cachefilesd
 unit, so package installation, ownership, configuration, kernel-module loading,
 and daemon lifecycle all converge from Git on every activation.
