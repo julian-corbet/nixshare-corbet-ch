@@ -51,7 +51,7 @@
       # automounts, and a rendered JSON config -- see README's
       # "Non-NixOS hosts" section for the one caveat worth knowing.
       # ---------------------------------------------------------------
-      systemManagerModules.core = ./modules/core.nix;
+      systemManagerModules.core = ./modules/system-manager/core.nix;
       systemManagerModules.default = self.systemManagerModules.core;
       systemManagerModules.nfs-provider = ./modules/system-manager/nfs.nix;
       systemManagerModules.cifs-provider = ./modules/system-manager/cifs.nix;
@@ -212,6 +212,53 @@
             && clientEval.config.boot.supportedFilesystems ? nfs
             && clientEval.config.boot.supportedFilesystems ? cifs
             && clientEval.config.services.cachefilesd.enable;
+
+          # Nix's flake schema only checks that systemManagerModules are
+          # functions. This evaluation runs their actual Arch-facing unit
+          # shape through the compatible NixOS module evaluator: package
+          # installation stays host-owned, but the selected packages must be
+          # made explicit after that host unit, before cachefilesd starts.
+          systemManagerClientEval = lib.nixosSystem {
+            inherit system;
+            modules = [
+              ./modules/system-manager/core.nix
+              ./modules/system-manager/nfs.nix
+              ./modules/system-manager/cifs.nix
+              ./modules/system-manager/fscache.nix
+              {
+                fileSystems."/" = { device = "/dev/disk/by-label/nixos"; fsType = "ext4"; };
+                boot.loader.grub.device = "nodev";
+                nixshare = {
+                  enable = true;
+                  systemManager.packageReconcilerUnit = "host-packages.service";
+                  fscache.enable = true;
+                  shares = {
+                    example = {
+                      protocol = "nfs";
+                      peer = "storage-host";
+                      remotePath = "/export/example";
+                      mountpoint = "/mnt/example";
+                      cacheSettings.fsc = "true";
+                    };
+                    backup = {
+                      protocol = "cifs";
+                      peer = "storage-host";
+                      remotePath = "backup";
+                      mountpoint = "/mnt/backup";
+                    };
+                  };
+                };
+              }
+            ];
+          };
+
+          systemManagerContractOk =
+            lib.all (package: lib.elem package systemManagerClientEval.config.nixshare.archPackages)
+              [ "nfs-utils" "cifs-utils" "cachefilesd" ]
+            && lib.elem "host-packages.service"
+              systemManagerClientEval.config.systemd.services.nixshare-package-ownership.after
+            && lib.elem "nixshare-package-ownership.service"
+              systemManagerClientEval.config.systemd.services.nixshare-cachefilesd-reconcile.requires;
         in
         {
           nixshare-sharenfs-injection-guard =
@@ -234,6 +281,11 @@
             if clientContractOk
             then pkgs.runCommand "nixshare-client-provider-contract" { } "touch $out"
             else throw "nixshare client provider contract FAILED";
+
+          nixshare-system-manager-provider-contract =
+            if systemManagerContractOk
+            then pkgs.runCommand "nixshare-system-manager-provider-contract" { } "touch $out"
+            else throw "nixshare system-manager provider contract FAILED";
         });
     };
 }

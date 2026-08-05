@@ -48,6 +48,8 @@ in
     systemd.services.nixshare-cachefilesd-reconcile = {
       description = "nixshare: enable and apply the cachefilesd service";
       wantedBy = [ "multi-user.target" ];
+      after = [ "nixshare-package-ownership.service" ];
+      requires = [ "nixshare-package-ownership.service" ];
       restartTriggers = [ config.environment.etc."cachefilesd.conf".source ];
       serviceConfig = {
         Type = "oneshot";

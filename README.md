@@ -404,22 +404,19 @@ imports = [
 nixshare.enable = true;
 nixshare.fscache.enable = true;
 
-# Nixshare declares intent; the host's package reconciler owns pacman.
+# The host reconciler installs packages; Nixshare then marks its selected
+# packages explicit so unrelated dependency changes cannot remove them.
 nixarch.packages.pacman = config.nixshare.archPackages;
-
-# Guarantee the foreign package unit exists before nixshare enables/restarts it.
-systemd.services.nixshare-cachefilesd-reconcile.after = [
-  "nixarch-packages-reconcile.service"
-];
+nixshare.systemManager.packageReconcilerUnit = "nixarch-packages-reconcile.service";
 # ... same options as above
 ```
 
 The system-manager backend writes only declarative `/etc` state and systemd
-units. It never runs `pacman` itself: that boundary lets the host keep one
-package transaction/reconciliation policy. Its FS-Cache bridge explicitly
-enables and restarts the distribution-owned cachefilesd unit, so package
-installation, configuration, kernel-module loading, and daemon lifecycle all
-converge from Git on every activation.
+units. The host owns the package transaction, while Nixshare's idempotent
+ownership unit records its selected packages as explicit after that transaction.
+Its FS-Cache bridge then enables and restarts the distribution-owned cachefilesd
+unit, so package installation, ownership, configuration, kernel-module loading,
+and daemon lifecycle all converge from Git on every activation.
 
 ## Security
 

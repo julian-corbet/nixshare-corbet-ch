@@ -57,10 +57,13 @@ provider) would follow the same three steps.
 `fscache-provider` does not create mounts. It supplies the local daemon and
 kernel capability required by NFS shares that set `cacheSettings.fsc =
 "true"`, plus the Arch package intent for a system-manager host's own
-reconciler. Keep storage policy — a Btrfs subvolume, quota, dedicated mount,
-or any other host-specific backing-store guarantee — in the consuming host.
-The public module may require an absolute cache directory and validate daemon
-watermarks, but must not assume a particular filesystem or layout.
+reconciler. The system-manager core marks those selected packages explicit
+after that host-owned transaction; it must never install, remove, or replace a
+host's package reconciler. Keep storage policy — a Btrfs subvolume, quota,
+dedicated mount, or any other host-specific backing-store guarantee — in the
+consuming host. The public module may require an absolute cache directory and
+validate daemon watermarks, but must not assume a particular filesystem or
+layout.
 
 ## License
 
