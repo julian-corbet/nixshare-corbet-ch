@@ -263,6 +263,39 @@
               systemManagerClientEval.config.systemd.services.nixshare-package-ownership.after
             && lib.elem "nixshare-package-ownership.service"
               systemManagerClientEval.config.systemd.services.nixshare-cachefilesd-reconcile.requires;
+
+          # ---- the syncthing peer -------------------------------------
+          # Deliberately evaluated with NO shares and NO provider modules
+          # imported: continuous replication is an alternative to a mount,
+          # not an addition to one, so a host that wants only this must be
+          # able to declare it without pulling in a mount stack it will
+          # never use. The share-less fixture is what proves that -- it
+          # would fail outright if the option had been wired through any
+          # provider-shaped machinery.
+          mkSyncthingEval = enable: lib.nixosSystem {
+            inherit system;
+            modules = [
+              ./modules/core.nix
+              {
+                fileSystems."/" = { device = "/dev/disk/by-label/nixos"; fsType = "ext4"; };
+                boot.loader.grub.device = "nodev";
+                nixshare = { enable = true; syncthing.enable = enable; };
+              }
+            ];
+          };
+
+          syncthingOn = (mkSyncthingEval true).config.nixshare;
+          syncthingOff = (mkSyncthingEval false).config.nixshare;
+
+          syncthingContractOk =
+            lib.elem "syncthing" syncthingOn.archPackages
+            # Not AUR: syncthing is an official-repo package on Arch, and a name in the wrong half
+            # of that split is the failure the provider lists already guard against.
+            && !lib.elem "syncthing" syncthingOn.aurPackages
+            # Off by default, and off means contributing nothing at all -- a host that never
+            # mentions this option must not acquire a sync daemon because it wanted an NFS mount.
+            && syncthingOff.archPackages == [ ]
+            && syncthingOff.syncthing.enable == false;
         in
         {
           nixshare-sharenfs-injection-guard =
@@ -290,6 +323,15 @@
             if systemManagerContractOk
             then pkgs.runCommand "nixshare-system-manager-provider-contract" { } "touch $out"
             else throw "nixshare system-manager provider contract FAILED";
+
+          nixshare-syncthing-contract =
+            if syncthingContractOk
+            then pkgs.runCommand "nixshare-syncthing-contract" { } "touch $out"
+            else throw ''
+              nixshare syncthing contract FAILED:
+                enabled  -> archPackages = ${builtins.toJSON syncthingOn.archPackages}, aurPackages = ${builtins.toJSON syncthingOn.aurPackages}
+                disabled -> archPackages = ${builtins.toJSON syncthingOff.archPackages}
+            '';
         });
     };
 }

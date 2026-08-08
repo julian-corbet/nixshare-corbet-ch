@@ -284,6 +284,79 @@ in
       '';
     };
 
+    # ------------------------------------------------------------------
+    # Syncthing -- the OTHER way a file lives on more than one machine.
+    #
+    # WHY IT IS IN THIS REPO AT ALL, stated as a boundary rather than a
+    # list. nixshare's subject is not "mounts", it is: this host reaches
+    # files that also live somewhere else, declaratively, without the
+    # address of "somewhere else" being hardcoded. A mount is one
+    # mechanism for that and it has a specific shape -- one authoritative
+    # copy on a server, every client reading it live over a network
+    # round-trip, and a session that wedges when the server goes away
+    # (the failure this entire repo was written for). Continuous
+    # replication is the other mechanism, and it inverts every one of
+    # those properties: every peer holds a real local copy, reads never
+    # touch the network, and a peer going away costs freshness rather
+    # than an uninterruptible kernel wait. Same subject, opposite
+    # trade-off. A repo that carried only the first would be silently
+    # claiming the trade-off is not a choice.
+    #
+    # A PEER, NEVER A DUPLICATE OF ONE. Syncthing is symmetric: there is
+    # no server and no client, only devices that agree to share a folder.
+    # So a host declaring this is not standing up its own private
+    # instance beside somebody else's -- it is joining a mesh whose other
+    # members are declared elsewhere, possibly by an entirely different
+    # mechanism (a container, an orchestrator, another operator's box).
+    # Two peers of one mesh look like two copies of the same thing to
+    # anyone reading two configs side by side, and deleting "the
+    # duplicate" is how you remove one end of a working sync. That is
+    # the misreading this option's existence is meant to prevent.
+    #
+    # DECLARES THE PEER, CONFIGURES NOTHING. No devices, no folder ids,
+    # no shared paths, no keys. A Syncthing device identity is generated
+    # on first run and is by definition per-host; the folders and peers
+    # it agrees to are a mesh-wide fact that no single host's declaration
+    # can own. nixshare takes the same position here it takes on share
+    # credentials: publish the intent, let the host supply the identity.
+    #
+    # ARCH-FACING, LIKE THE PROVIDER PACKAGE LISTS ABOVE. This publishes
+    # into `archPackages` and stops. On NixOS the answer is nixpkgs'
+    # own `services.syncthing` -- a real module with state directory,
+    # user, firewall and declarative folder options -- and a package in
+    # `environment.systemPackages` beside it would be the same mistake
+    # `archPackages`' own doc already names one paragraph up: "NixOS
+    # backends use native filesystem and service options instead".
+    #
+    # AND IT DOES NOT START ANYTHING HERE EITHER. The Arch package ships
+    # `syncthing.service` (system) and a `syncthing.service` user unit,
+    # both disabled out of the box. Declaring the package is not
+    # enabling the daemon, deliberately: which of those two units a host
+    # wants is a real decision about whose files these are, and a
+    # package reconciler is the wrong place to make it.
+    syncthing = {
+      enable = mkOption {
+        type = types.bool;
+        default = false;
+        description = ''
+          Declare Syncthing on this host: continuous peer-to-peer folder
+          replication, alongside (not instead of) the mount-based shares
+          this module's `shares` option describes.
+
+          Publishes `syncthing` into `nixshare.archPackages` and does
+          nothing else -- no device identity, no folders, no peers, and
+          no enabled unit. See this option's own comment in
+          modules/core.nix for why each of those is deliberately out of
+          scope, and why a host declaring this is joining a mesh rather
+          than standing up a second copy of somebody else's instance.
+
+          NixOS hosts should use nixpkgs' `services.syncthing` instead;
+          this option is the Arch/system-manager half, matching the
+          stance `nixshare.archPackages` already documents.
+        '';
+      };
+    };
+
     establishTimeoutSec = mkOption {
       type = types.ints.positive;
       default = 15;
@@ -493,7 +566,12 @@ in
   };
 
   config = mkIf cfg.enable {
-    nixshare.archPackages = unique providerArchPackages;
+    # `syncthing` joins the provider-derived names rather than getting a list of its own: a
+    # consuming host wires ONE `nixshare.archPackages` into its reconciler (see that option's own
+    # doc), and a second sink would be a second thing every consumer has to remember to wire --
+    # exactly the shape of omission that leaves a declared package uninstalled with no error.
+    nixshare.archPackages =
+      unique (providerArchPackages ++ optional cfg.syncthing.enable "syncthing");
     nixshare.aurPackages = unique providerAurPackages;
 
     assertions =
