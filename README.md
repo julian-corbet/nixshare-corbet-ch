@@ -210,16 +210,19 @@ timer, and escalates only on a sustained stall:
    can never be served from the attribute cache (`lookupcache=positive`
    caches only successful lookups) — without this, a mountpoint something
    else keeps touching can stay cache-warm for an entire incident and the
-   probe never forces a live RPC at all. The second is an actual directory
-   listing (`ls -la`) of the mountpoint, because a wedge confined to
-   READDIRPLUS has been observed leaving plain `stat()`/read/write on the
-   same mount working normally for hours — a probe built from `stat()`
-   alone cannot see that class regardless of tuning. The second check is a
-   narrower guarantee than the first: it targets the mountpoint itself
-   rather than a target constructed to defeat caching, so on a share
-   something else lists within `actimeo`, it can still read from a warm
-   directory-page cache — a known, stated gap, not a silent one (see
-   `pkgs/nixshare-health.nix`'s header). Both checks assume this provider's
+   probe never forces a live RPC at all. The second reads a names-only,
+   unsorted directory listing from the mountpoint (`ls -U1 --color=never`), because
+   a wedge confined to READDIRPLUS has been observed leaving plain
+   `stat()`/read/write on the same mount working normally for hours — a probe
+   built from `stat()` alone cannot see that class regardless of tuning. It
+   deliberately does not use a full `ls -la`: that stats every child and, on
+   a ZFS `crossmnt` tree, can cross many filesystems and manufacture seconds
+   of cold export-cache work. The second check is a narrower guarantee than
+   the first: it targets the mountpoint itself rather than a target
+   constructed to defeat caching, so on a share something else scans within
+   `actimeo`, it can still read from a warm directory-page cache — a known,
+   stated gap, not a silent one (see `pkgs/nixshare-health.nix`'s header).
+   Both checks assume this provider's
    `lookupcache=positive`/`actimeo` defaults; CIFS shares run the same
    probe without an equivalent documented guarantee.
 2. **Hysteresis** — `consecutiveFailures` bad ticks in a row before acting.
@@ -491,14 +494,15 @@ usual NFS assumptions gets it wrong:
                         /etc/exports stays EMPTY          ← by design, not omission
         │
         ▼
-  inheritance fans out  a handful of property sets become hundreds of exports,
-                        because child datasets inherit sharenfs from their parent
+  reconcile descendants inherited sharenfs is made locally `off` below each
+                        crossmnt root; explicitly declared children are restored
         │
         ▼
   client mounts a share nixshare.shares.<name> → one .mount/.automount unit
         │
         ▼
-  crossmnt does the rest the kernel SYNTHESIZES a new mount the first time any
+  crossmnt does the rest the kernel IMPLICITLY exports each child with the
+                        parent's options and synthesizes a client mount when a
                         process walks into a child dataset. No unit, no
                         FragmentPath, nothing declares it — and nothing can.
 ```

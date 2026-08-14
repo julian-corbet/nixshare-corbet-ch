@@ -467,9 +467,10 @@ in
         default = 500;
         description = ''
           Each tick runs TWO checks per share -- a `stat()` guaranteed to
-          reach the server (never cache-served) and a directory listing
-          (catches a wedge confined to READDIRPLUS that the stat alone
-          cannot see; see pkgs/nixshare-health.nix). Either one taking
+          reach the server (never cache-served) and a names-only directory
+          scan (catches a wedge confined to READDIRPLUS that the stat alone
+          cannot see without statting every child; see
+          pkgs/nixshare-health.nix). Either one taking
           longer than this counts the probe as degraded. Healthy is
           single-digit milliseconds even over a WireGuard overlay; the real
           incident this defends against measured 3263 ms for one stat. 500

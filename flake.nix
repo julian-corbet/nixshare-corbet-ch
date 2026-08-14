@@ -156,8 +156,7 @@
           hostileVal = "rw=@100.64.99.0/24";
 
           renderedScript =
-            (mkNfsServerEval { "${hostileTree}" = hostileVal; })
-              .config.systemd.services.nfs-shares-apply.script;
+            (mkNfsServerEval { "${hostileTree}" = hostileVal; }).config.systemd.services.nfs-shares-apply.script;
 
           # Independently reconstructed expected rendering -- same shape
           # applyScript is documented to produce, built with nixpkgs' own
@@ -166,6 +165,21 @@
           expectedScript =
             "zfs set sharenfs=${lib.escapeShellArg hostileVal} ${lib.escapeShellArg hostileTree} || echo >&2 ${lib.escapeShellArg "nfs-shares: ${hostileTree} not ready, keeping persisted sharenfs"}"
             + "\nzfs share -a || true\n";
+
+          # A crossmnt root must collapse inherited descendant exports before
+          # the declared values are applied. This is deliberately separate
+          # from the hostile-name case above: that case has no crossmnt token,
+          # so it proves the old rendering stays byte-exact while this one
+          # proves the new branch is actually present in the rendered unit.
+          crossmntTree = "solid/shares";
+          crossmntVal = "rw=@100.64.99.0/24,crossmnt";
+          crossmntScript =
+            (mkNfsServerEval { "${crossmntTree}" = crossmntVal; }).config.systemd.services.nfs-shares-apply.script;
+          crossmntContractOk =
+            lib.hasInfix "for tree in ${lib.escapeShellArg crossmntTree}; do" crossmntScript
+            && lib.hasInfix ''[ "$state" = $'off\tlocal' ] || zfs set sharenfs=off "$child" || true'' crossmntScript
+            && lib.hasInfix "zfs set sharenfs=${lib.escapeShellArg crossmntVal} ${lib.escapeShellArg crossmntTree}" crossmntScript
+            && !lib.hasInfix "for tree in" renderedScript;
 
           # The client contract is deliberately tested separately from the
           # server injection guard above. It proves that importing all three
@@ -301,20 +315,23 @@
         in
         {
           nixshare-sharenfs-injection-guard =
-            if goodEval.success && !badEval.success && renderedScript == expectedScript
+            if goodEval.success && !badEval.success && renderedScript == expectedScript && crossmntContractOk
             then pkgs.runCommand "nixshare-sharenfs-injection-guard" { } "touch $out"
-            else throw ''
-              nixshare sharenfs injection guard FAILED:
-                (a) ordinary dataset name evaluated ok         = ${lib.boolToString goodEval.success} (expected true)
-                (a) hostile dataset name rejected by assertion = ${lib.boolToString (!badEval.success)} (expected true)
-                (b) rendered applyScript for a hostile name matches
-                    the independently-expected, fully-escaped text = ${lib.boolToString (renderedScript == expectedScript)} (expected true)
+            else
+              throw ''
+                nixshare sharenfs injection guard FAILED:
+                  (a) ordinary dataset name evaluated ok         = ${lib.boolToString goodEval.success} (expected true)
+                  (a) hostile dataset name rejected by assertion = ${lib.boolToString (!badEval.success)} (expected true)
+                  (b) rendered applyScript for a hostile name matches
+                      the independently-expected, fully-escaped text = ${lib.boolToString (renderedScript == expectedScript)} (expected true)
+                  (c) crossmnt rendering collapses inherited descendants
+                      before restoring declarations = ${lib.boolToString crossmntContractOk} (expected true)
 
-              --- (b) actual rendered script ---
-              ${renderedScript}
-              --- (b) expected rendered script ---
-              ${expectedScript}
-            '';
+                --- (b) actual rendered script ---
+                ${renderedScript}
+                --- (b) expected rendered script ---
+                ${expectedScript}
+              '';
 
           nixshare-client-provider-contract =
             if clientContractOk
@@ -329,11 +346,12 @@
           nixshare-syncthing-contract =
             if syncthingContractOk
             then pkgs.runCommand "nixshare-syncthing-contract" { } "touch $out"
-            else throw ''
-              nixshare syncthing contract FAILED:
-                enabled  -> archPackages = ${builtins.toJSON syncthingOn.archPackages}, aurPackages = ${builtins.toJSON syncthingOn.aurPackages}
-                disabled -> archPackages = ${builtins.toJSON syncthingOff.archPackages}
-            '';
+            else
+              throw ''
+                nixshare syncthing contract FAILED:
+                  enabled  -> archPackages = ${builtins.toJSON syncthingOn.archPackages}, aurPackages = ${builtins.toJSON syncthingOn.aurPackages}
+                  disabled -> archPackages = ${builtins.toJSON syncthingOff.archPackages}
+              '';
 
           # Build-time inspection of the actual rendered executable, not the
           # Nix source.  The reachability gate must carry an absolute Bash
@@ -358,6 +376,15 @@
               if ! head -n 8 ${healthPackage}/bin/nixshare-health \
                 | grep -F ${lib.escapeShellArg "${pkgs.gnugrep}/bin"} >/dev/null; then
                 echo "rendered nixshare-health PATH does not contain gnugrep" >&2
+                exit 1
+              fi
+              if ! grep -F 'ls -U1 --color=never "$mp"' \
+                ${healthPackage}/bin/nixshare-health >/dev/null; then
+                echo "rendered nixshare-health does not use the names-only directory probe" >&2
+                exit 1
+              fi
+              if grep -F 'ls -la "$mp"' ${healthPackage}/bin/nixshare-health >/dev/null; then
+                echo "rendered nixshare-health still recursively stats the mountpoint listing" >&2
                 exit 1
               fi
               touch "$out"

@@ -37,6 +37,37 @@ let
   # the identical hostile name was refused here and accepted there.
   inherit (import ../zfs-names.nix { inherit lib; }) safeZfsTreeName unsafeTreeNameMessage;
 
+  # A ZFS sharenfs property inherits to every descendant dataset. That is
+  # redundant beneath a `crossmnt` export: the kernel already exports every
+  # child filesystem implicitly with the parent's options. Keeping both forms
+  # turns a handful of declared roots into hundreds of explicit export records.
+  # On a real 200-dataset tree, each cold export-cache miss made rpc.mountd scan
+  # the whole table for about 900 ms; a directory listing that crossed several
+  # children could therefore take ten seconds even on an idle local network.
+  #
+  # Only collapse roots whose own option list explicitly contains `crossmnt`.
+  # A non-crossmnt declaration may intentionally rely on inherited sharenfs to
+  # make its descendants independently mountable, so changing that would not be
+  # semantics-preserving. Explicit descendant declarations are applied again
+  # after the collapse loop and therefore keep their own options.
+  crossmntTrees = lib.attrNames (lib.filterAttrs
+    (_: val: builtins.elem "crossmnt" (lib.splitString "," val))
+    cfg.sharenfs);
+
+  collapseInheritedCrossmntExports = lib.optionalString (crossmntTrees != [ ]) ''
+    for tree in ${lib.escapeShellArgs crossmntTrees}; do
+      if ! zfs list -H -o name "$tree" >/dev/null 2>&1; then
+        echo >&2 "nfs-shares: $tree not ready, keeping persisted descendant sharenfs"
+        continue
+      fi
+      zfs list -rH -o name "$tree" 2>/dev/null | tail -n +2 | while read -r child; do
+        # Avoid rewriting an already-converged local property on every switch.
+        state=$(zfs get -H -o value,source sharenfs "$child" 2>/dev/null || true)
+        [ "$state" = $'off\tlocal' ] || zfs set sharenfs=off "$child" || true
+      done
+    done
+  '';
+
   # `zfs set sharenfs=<v> <tree>` per share -- tolerant (a tree whose pool
   # is not yet imported, e.g. a data pool before its own unlock, keeps its
   # already-persisted property; the pool carries it). The `|| echo ...`
@@ -45,9 +76,11 @@ let
   # string) precisely because a value emitted by `escapeShellArg` is only
   # safe as a whole shell token by itself -- embedding it inside another
   # quoted string would not carry the same guarantee.
-  applyScript = lib.concatStringsSep "\n" (lib.mapAttrsToList (tree: val:
-    "zfs set sharenfs=${lib.escapeShellArg val} ${lib.escapeShellArg tree} || echo >&2 ${lib.escapeShellArg "nfs-shares: ${tree} not ready, keeping persisted sharenfs"}"
-  ) cfg.sharenfs) + "\nzfs share -a || true\n";
+  applyScript = collapseInheritedCrossmntExports + lib.concatStringsSep "\n" (lib.mapAttrsToList
+    (tree: val:
+      "zfs set sharenfs=${lib.escapeShellArg val} ${lib.escapeShellArg tree} || echo >&2 ${lib.escapeShellArg "nfs-shares: ${tree} not ready, keeping persisted sharenfs"}"
+    )
+    cfg.sharenfs) + "\nzfs share -a || true\n";
 in
 {
   options.nixshare.server.nfs = {
@@ -71,6 +104,15 @@ in
         design note on definition-is-the-asset: build this attrset from
         your own client/tree model (rw addresses, squash, crossmnt, ...);
         this module only applies it and re-shares.
+
+        For an entry containing the exact comma-delimited `crossmnt`
+        option, the reconciler sets `sharenfs=off` locally on undeclared
+        descendants before reapplying every declared entry. This prevents
+        ZFS property inheritance from materializing hundreds of redundant
+        explicit exports; kernel `crossmnt` still exposes those child
+        filesystems with the parent's options. Explicit child entries in
+        this attrset retain their own options. Non-crossmnt trees keep the
+        previous inheritance behavior unchanged.
 
         Each key is a ZFS dataset name and MUST match
         `[A-Za-z0-9_.:/-]+` (enforced by an assertion in `config`, see
@@ -201,7 +243,8 @@ in
       IOWeight = cfg.ioWeight;
     };
 
-    # Reconcile the caller's matrix onto the pool: set each tree's
+    # Reconcile the caller's matrix onto the pool: collapse redundant
+    # inherited exports below crossmnt roots, set each declared tree's
     # sharenfs property, then share. Runs after nfsd is up; idempotent +
     # tolerant (a not-yet-imported pool keeps its persisted property).
     systemd.services.nfs-shares-apply = {

@@ -67,8 +67,12 @@
 #      either end the entire time; only a reboot cleared it. A probe built
 #      from stat() alone is structurally incapable of detecting that class
 #      no matter how it is tuned. Fixed by adding a second, independent
-#      probe that actually lists the mountpoint (`ls -la`), so a wedge
-#      confined to READDIRPLUS shows up even when every stat() is fine.
+#      probe that reads a names-only directory listing from the mountpoint, so
+#      a wedge confined to READDIRPLUS shows up even when every stat() is
+#      fine. This deliberately does NOT `ls -la` the whole directory: on a
+#      crossmnt ZFS tree that stats every child filesystem, multiplying a
+#      harmless cold export-cache miss into seconds of work and making the
+#      health check create the degradation it then tries to cure.
 #
 # Curing this second class is not guaranteed -- the one real incident needed
 # a reboot even after manual intervention -- which is exactly why the
@@ -77,8 +81,9 @@
 # What detection buys is the alert firing in minutes instead of the person
 # at the keyboard being the only sensor, for however long they tolerate it.
 #
-# HONEST LIMIT ON FIX 2: probe 2 lists the mountpoint itself, not a target
-# constructed to defeat caching the way probe 1's nonexistent name does.
+# HONEST LIMIT ON FIX 2: probe 2 reads directory names from the mountpoint
+# itself, not a target constructed to defeat caching the way probe 1's
+# nonexistent name does.
 # `lookupcache` (probe 1's guarantee) governs LOOKUP caching only; directory
 # CONTENT is governed separately by `actimeo`/`acdirmax`, so if something
 # else lists that same mountpoint within the cache window, probe 2 can still
@@ -222,23 +227,26 @@ writeShellApplication {
       # is load-bearing under `set -e`: this stat is EXPECTED to fail
       # (ENOENT) on every healthy tick, and that must not abort the script.
       timeout -k 5 "$probe_timeout" stat -c %i "$mp/.nixshare-health-probe" >/dev/null 2>&1 || rc1=$?
-      # Probe 2: an actual directory listing. Deliberately NOT redundant
-      # with probe 1 -- this is what catches a wedge confined to
-      # READDIRPLUS while plain stat() keeps working, the failure class
-      # neither probe 1 nor the original single-stat probe can see.
-      timeout -k 5 "$probe_timeout" ls -la "$mp" >/dev/null 2>&1 || rc2=$?
+      # Probe 2: read directory names without metadata. Deliberately NOT
+      # redundant with probe 1 -- this catches a wedge confined to
+      # READDIRPLUS while plain stat() keeps working. `ls -U1` does not
+      # sort and, with metadata/color disabled, does not stat the children.
+      # The old `ls -la` did: on ZFS crossmnt trees it crossed every child
+      # filesystem, multiplying one ordinary cold export-cache miss per
+      # child into a false ten-second outage and a needless reset.
+      timeout -k 5 "$probe_timeout" ls -U1 --color=never "$mp" >/dev/null 2>&1 || rc2=$?
       end=$(date +%s%N)
       echo $(( (end - start) / 1000000 ))
       # rc1 and rc2 are NOT interchangeable, because a healthy tick is
       # expected to end each sub-probe differently. Probe 1's stat is
       # expected to FAIL (ENOENT) every time -- that is the whole point --
       # so only a timeout counts against it (124 = timeout's own TERM kill,
-      # 137 = the -k KILL follow-up). Probe 2's ls is expected to SUCCEED
-      # every time -- listing a mount that is actually up is not supposed to
+      # 137 = the -k KILL follow-up). Probe 2's names-only scan is expected to
+      # SUCCEED every time -- reading an established mount is not supposed to
       # fail -- so ANY nonzero from it (ESTALE, EIO, a permission problem,
       # not just a timeout) is a real signal and must count as degraded.
       # Collapsing these into one shared check would silently reclassify a
-      # fast, genuine ls failure as a healthy tick.
+      # fast, genuine directory-scan failure as a healthy tick.
       if [ "$rc1" -eq 124 ] || [ "$rc1" -eq 137 ] || [ "$rc2" -ne 0 ]; then
         return 1
       fi
