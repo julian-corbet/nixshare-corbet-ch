@@ -504,8 +504,9 @@ usual NFS assumptions gets it wrong:
                         /etc/exports stays EMPTY          ← by design, not omission
         │
         ▼
-  reconcile descendants inherited sharenfs is made locally `off` below each
-                        crossmnt root; explicitly declared children are restored
+  reconcile descendants inherited sharenfs is made locally `off` on undeclared
+                        ZFS filesystems below each crossmnt root; zvols and
+                        explicitly declared children are skipped
         │
         ▼
   client mounts a share nixshare.shares.<name> → one .mount/.automount unit

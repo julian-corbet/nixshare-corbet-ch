@@ -173,12 +173,21 @@
           # proves the new branch is actually present in the rendered unit.
           crossmntTree = "solid/shares";
           crossmntVal = "rw=@100.64.99.0/24,crossmnt";
+          explicitChild = "${crossmntTree}/special";
+          explicitChildVal = "ro=@100.64.99.0/24";
           crossmntScript =
-            (mkNfsServerEval { "${crossmntTree}" = crossmntVal; }).config.systemd.services.nfs-shares-apply.script;
+            (mkNfsServerEval {
+              "${crossmntTree}" = crossmntVal;
+              "${explicitChild}" = explicitChildVal;
+            }).config.systemd.services.nfs-shares-apply.script;
           crossmntContractOk =
-            lib.hasInfix "for tree in ${lib.escapeShellArg crossmntTree}; do" crossmntScript
-            && lib.hasInfix ''[ "$state" = $'off\tlocal' ] || zfs set sharenfs=off "$child" || true'' crossmntScript
+            lib.hasInfix "declare -A nfs_declared_trees=()" crossmntScript
+            && lib.hasInfix "for tree in ${lib.escapeShellArg crossmntTree}; do" crossmntScript
+            && lib.hasInfix ''zfs get -rH -t filesystem -o name,value,source sharenfs "$tree"'' crossmntScript
+            && lib.hasInfix ''[ -n "''${nfs_declared_trees[$child]+declared}" ] && continue'' crossmntScript
+            && lib.hasInfix ''if [ "$value" != off ] || [ "$source" != local ]; then'' crossmntScript
             && lib.hasInfix "zfs set sharenfs=${lib.escapeShellArg crossmntVal} ${lib.escapeShellArg crossmntTree}" crossmntScript
+            && lib.hasInfix "zfs set sharenfs=${lib.escapeShellArg explicitChildVal} ${lib.escapeShellArg explicitChild}" crossmntScript
             && !lib.hasInfix "for tree in" renderedScript;
 
           # The client contract is deliberately tested separately from the

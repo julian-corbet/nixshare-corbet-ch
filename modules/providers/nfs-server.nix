@@ -48,22 +48,48 @@ let
   # Only collapse roots whose own option list explicitly contains `crossmnt`.
   # A non-crossmnt declaration may intentionally rely on inherited sharenfs to
   # make its descendants independently mountable, so changing that would not be
-  # semantics-preserving. Explicit descendant declarations are applied again
-  # after the collapse loop and therefore keep their own options.
+  # semantics-preserving. Explicit descendant declarations are skipped by the
+  # collapse loop and applied afterward, so they keep their own options without
+  # being toggled off in between.
   crossmntTrees = lib.attrNames (lib.filterAttrs
     (_: val: builtins.elem "crossmnt" (lib.splitString "," val))
     cfg.sharenfs);
+  declaredTrees = lib.attrNames cfg.sharenfs;
 
   collapseInheritedCrossmntExports = lib.optionalString (crossmntTrees != [ ]) ''
+    # Explicit declarations own their properties and must never be toggled off
+    # during the collapse. Besides avoiding a brief policy change, this keeps
+    # an idempotent reconcile from needlessly rebuilding the export table.
+    declare -A nfs_declared_trees=()
+    for declared_tree in ${lib.escapeShellArgs declaredTrees}; do
+      nfs_declared_trees["$declared_tree"]=1
+    done
+
     for tree in ${lib.escapeShellArgs crossmntTrees}; do
-      if ! zfs list -H -o name "$tree" >/dev/null 2>&1; then
+      if ! zfs list -H -t filesystem -o name "$tree" >/dev/null 2>&1; then
         echo >&2 "nfs-shares: $tree not ready, keeping persisted descendant sharenfs"
         continue
       fi
-      zfs list -rH -o name "$tree" 2>/dev/null | tail -n +2 | while read -r child; do
+
+      # One recursive property read is both faster and race-resistant compared
+      # with listing names and then issuing a separate `zfs get` for each one.
+      # Restrict the query to filesystems: sharenfs does not apply to zvols.
+      zfs get -rH -t filesystem -o name,value,source sharenfs "$tree" 2>/dev/null |
+      while IFS=$'\t' read -r child value source; do
+        [ "$child" = "$tree" ] && continue
+        [ -n "''${nfs_declared_trees[$child]+declared}" ] && continue
+
         # Avoid rewriting an already-converged local property on every switch.
-        state=$(zfs get -H -o value,source sharenfs "$child" 2>/dev/null || true)
-        [ "$state" = $'off\tlocal' ] || zfs set sharenfs=off "$child" || true
+        if [ "$value" != off ] || [ "$source" != local ]; then
+          # A short-lived filesystem can disappear after the recursive query.
+          # Suppress that benign race, but report a real failure on a dataset
+          # that still exists so the service journal remains actionable.
+          if ! zfs set sharenfs=off "$child"; then
+            if zfs list -H -t filesystem -o name "$child" >/dev/null 2>&1; then
+              echo >&2 "nfs-shares: failed to collapse inherited sharenfs on $child"
+            fi
+          fi
+        fi
       done
     done
   '';
