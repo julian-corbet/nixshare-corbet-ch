@@ -400,6 +400,11 @@
                 echo "rendered nixshare-health does not use the names-only directory probe" >&2
                 exit 1
               fi
+              if ! grep -F 'setpriv --reuid "$probe_uid" --regid "$probe_gid" --init-groups' \
+                ${healthPackage}/bin/nixshare-health >/dev/null; then
+                echo "rendered nixshare-health cannot probe a root-squashed share as its intended user" >&2
+                exit 1
+              fi
               if grep -F 'ls -la "$mp"' ${healthPackage}/bin/nixshare-health >/dev/null; then
                 echo "rendered nixshare-health still recursively stats the mountpoint listing" >&2
                 exit 1

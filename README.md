@@ -224,7 +224,10 @@ timer, and escalates only on a sustained stall:
    stated gap, not a silent one (see `pkgs/nixshare-health.nix`'s header).
    Both checks assume this provider's
    `lookupcache=positive`/`actimeo` defaults; CIFS shares run the same
-   probe without an equivalent documented guarantee.
+   probe without an equivalent documented guarantee. If the server uses
+   `root_squash` and the share root is not world-readable, set
+   `health.probeUser`: only these two read-only operations drop to that local
+   identity, while all recovery actions remain root.
 2. **Hysteresis** — `consecutiveFailures` bad ticks in a row before acting.
    A big copy, a cold cache or a scrub on the server produces one slow tick,
    never a sustained one; the client wedge never clears on its own, so
@@ -320,6 +323,9 @@ them would have made recovery impossible while looking like it ran.
 - `watchdog.alertCommand` — a shell command prefix the watchdog appends a
   message to and runs on every force-unmount; intended to be filled from
   nixpush's `mkSendCommand` (see Quickstart), not a hard dependency.
+- `health.probeUser` — optional local identity for read-only health probes;
+  needed for non-world-readable NFS roots behind `root_squash`. Recovery
+  remains root.
 - `health.resetTeardownTimeoutSec` (default `30`) — bounded wait between
   force-lazy-unmount and remount during `reset-client`. Completion requires
   the target NFS client, its volumes, and live TCP/2049 transports to vanish;

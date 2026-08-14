@@ -74,6 +74,14 @@
 #      harmless cold export-cache miss into seconds of work and making the
 #      health check create the degradation it then tries to cure.
 #
+#   3. The service needs root for recovery, but root is deliberately mapped to
+#      the anonymous uid by an NFS `root_squash` export. On a non-world-readable
+#      share root, both directory probes therefore fail immediately with
+#      EACCES even though the intended user has normal access. That is not a
+#      degraded client. `health.probeUser` runs only the two read-only probes
+#      under the consumer's identity with `setpriv`; all decisions and every
+#      recovery action remain in the root service.
+#
 # Curing this second class is not guaranteed -- the one real incident needed
 # a reboot even after manual intervention -- which is exactly why the
 # escalation ladder below already ends in "manual intervention needed... a
@@ -143,12 +151,25 @@ writeShellApplication {
 
     degraded_ms=$(jq -r '.degradedLatencyMs' "$config_file")
     probe_timeout=$(jq -r '.probeTimeoutSec' "$config_file")
+    probe_user=$(jq -r '.probeUser // empty' "$config_file")
     needed_fails=$(jq -r '.consecutiveFailures' "$config_file")
     cooldown=$(jq -r '.cooldownSec' "$config_file")
     recovery=$(jq -r '.recovery' "$config_file")
     reset_teardown_timeout=$(jq -r '.resetTeardownTimeoutSec' "$config_file")
     state_dir=$(jq -r '.stateDir' "$config_file")
     alert_command=$(jq -r '.alertCommand // empty' "$config_file")
+
+    probe_command=()
+    if [ -n "$probe_user" ]; then
+      if ! probe_uid=$(id -u "$probe_user") || ! probe_gid=$(id -g "$probe_user"); then
+        echo "nixshare-health: configured probeUser does not exist: $probe_user" >&2
+        exit 1
+      fi
+      # Drop privilege only around the two read-only filesystem operations.
+      # --init-groups preserves the user's ordinary supplementary access;
+      # the surrounding monitor remains root for systemd/mount recovery.
+      probe_command=(setpriv --reuid "$probe_uid" --regid "$probe_gid" --init-groups)
+    fi
 
     mkdir -p "$state_dir"
 
@@ -227,7 +248,7 @@ writeShellApplication {
       # just that a warm attribute-cache entry hasn't expired yet. The `||`
       # is load-bearing under `set -e`: this stat is EXPECTED to fail
       # (ENOENT) on every healthy tick, and that must not abort the script.
-      timeout -k 5 "$probe_timeout" stat -c %i "$mp/.nixshare-health-probe" >/dev/null 2>&1 || rc1=$?
+      timeout -k 5 "$probe_timeout" "''${probe_command[@]}" stat -c %i "$mp/.nixshare-health-probe" >/dev/null 2>&1 || rc1=$?
       # Probe 2: read directory names without metadata. Deliberately NOT
       # redundant with probe 1 -- this catches a wedge confined to
       # READDIRPLUS while plain stat() keeps working. `ls -U1` does not
@@ -235,7 +256,7 @@ writeShellApplication {
       # The old `ls -la` did: on ZFS crossmnt trees it crossed every child
       # filesystem, multiplying one ordinary cold export-cache miss per
       # child into a false ten-second outage and a needless reset.
-      timeout -k 5 "$probe_timeout" ls -U1 --color=never "$mp" >/dev/null 2>&1 || rc2=$?
+      timeout -k 5 "$probe_timeout" "''${probe_command[@]}" ls -U1 --color=never "$mp" >/dev/null 2>&1 || rc2=$?
       end=$(date +%s%N)
       echo $(( (end - start) / 1000000 ))
       # rc1 and rc2 are NOT interchangeable, because a healthy tick is

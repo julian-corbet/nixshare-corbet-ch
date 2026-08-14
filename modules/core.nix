@@ -242,6 +242,7 @@ let
   healthConfig = {
     degradedLatencyMs = cfg.health.degradedLatencyMs;
     probeTimeoutSec = cfg.health.probeTimeoutSec;
+    probeUser = cfg.health.probeUser;
     consecutiveFailures = cfg.health.consecutiveFailures;
     cooldownSec = cfg.health.cooldownSec;
     recovery = cfg.health.recovery;
@@ -485,6 +486,20 @@ in
         type = types.ints.positive;
         default = 10;
         description = "Hard bound on EACH of the tick's two sub-probes (see `degradedLatencyMs`), so a fully-hung mount cannot wedge the monitor itself -- worst case one tick is bounded by twice this value. A timeout counts as the most degraded reading possible.";
+      };
+
+      probeUser = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        example = "alice";
+        description = ''
+          Local user identity for the two read-only mount probes. Recovery
+          itself always remains root. Set this when an export uses
+          `root_squash` and its mount root is not world-readable: probing as
+          root would then receive an immediate EACCES, which is a permission
+          mismatch rather than evidence of a slow or wedged client. `null`
+          preserves root probes for system-wide mounts that root can read.
+        '';
       };
 
       consecutiveFailures = mkOption {
