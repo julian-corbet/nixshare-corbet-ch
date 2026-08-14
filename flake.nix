@@ -336,8 +336,11 @@
             '';
 
           # Build-time inspection of the actual rendered executable, not the
-          # Nix source: the server-reachability gate must carry an absolute
-          # Bash store path so it works under system-manager's clean unit PATH.
+          # Nix source.  The reachability gate must carry an absolute Bash
+          # store path, and every external command used deeper in recovery
+          # must be present in the wrapper's own PATH.  A missing awk used to
+          # let detection succeed and then abort reset-client after teardown
+          # had begun, so checking only the first branch is not enough.
           nixshare-health-clean-path-contract = pkgs.runCommand
             "nixshare-health-clean-path-contract"
             { }
@@ -345,6 +348,16 @@
               if ! grep -F ${lib.escapeShellArg (lib.getExe pkgs.bash)} \
                 ${healthPackage}/bin/nixshare-health >/dev/null; then
                 echo "rendered nixshare-health does not reference its Bash interpreter absolutely" >&2
+                exit 1
+              fi
+              if ! head -n 8 ${healthPackage}/bin/nixshare-health \
+                | grep -F ${lib.escapeShellArg "${pkgs.gawk}/bin"} >/dev/null; then
+                echo "rendered nixshare-health PATH does not contain gawk" >&2
+                exit 1
+              fi
+              if ! head -n 8 ${healthPackage}/bin/nixshare-health \
+                | grep -F ${lib.escapeShellArg "${pkgs.gnugrep}/bin"} >/dev/null; then
+                echo "rendered nixshare-health PATH does not contain gnugrep" >&2
                 exit 1
               fi
               touch "$out"

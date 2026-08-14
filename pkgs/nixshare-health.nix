@@ -103,11 +103,16 @@
 # (consecutive-failure counts, cure cooldown stamps) lives in files under
 # the configured stateDir, not in the process. A genuinely resident daemon
 # would warrant Rust; this is not that.
-{ lib, writeShellApplication, bash, jq, systemd, util-linux, coreutils, kmod, iproute2 }:
+{ lib, writeShellApplication, bash, jq, systemd, util-linux, coreutils, gawk, gnugrep, kmod, iproute2 }:
 
 writeShellApplication {
   name = "nixshare-health";
-  runtimeInputs = [ jq systemd util-linux coreutils kmod iproute2 ];
+  # This is the executable's complete command closure.  Do not rely on the
+  # ambient unit PATH: system-manager deliberately supplies a store-only PATH,
+  # and recovery used to reach its teardown phase only to discover that `awk`
+  # was absent.  `grep` is equally real even though its missing-command status
+  # is hidden inside the optional kernel-marker pipeline.
+  runtimeInputs = [ jq systemd util-linux coreutils gawk gnugrep kmod iproute2 ];
   text = ''
     # nixshare-health -- see pkgs/nixshare-health.nix and README.md
     # "How the health monitor works" for the full explanation.
