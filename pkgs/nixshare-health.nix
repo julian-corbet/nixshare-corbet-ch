@@ -146,6 +146,7 @@ writeShellApplication {
     needed_fails=$(jq -r '.consecutiveFailures' "$config_file")
     cooldown=$(jq -r '.cooldownSec' "$config_file")
     recovery=$(jq -r '.recovery' "$config_file")
+    reset_teardown_timeout=$(jq -r '.resetTeardownTimeoutSec' "$config_file")
     state_dir=$(jq -r '.stateDir' "$config_file")
     alert_command=$(jq -r '.alertCommand // empty' "$config_file")
 
@@ -271,6 +272,8 @@ writeShellApplication {
         *) echo "$raw" ;;
       esac
     }
+
+    ${builtins.readFile ./nixshare-health-reset.sh}
 
     # Every mount of a given server shares ONE nfs_client, so `reset-client`
     # can only destroy it if it tears down ALL of them. This lists mounts of
@@ -570,6 +573,15 @@ writeShellApplication {
         continue
       fi
 
+      # Snapshot the exact NFS clients backing this peer's declared mount
+      # roots while those mounts still exist. The later teardown proof
+      # joins mountinfo device IDs to nfsfs/volumes, so it does not depend on
+      # the configured peer name and the kernel hostname spelling agreeing.
+      if ! nixshare_capture_target_nfs_clients "''${mps[@]}"; then
+        notify "$peer -- REFUSING reset-client [observation-unavailable]: could not identify the target NFS client through mountinfo and nfsfs/volumes. Not touching anything."
+        continue
+      fi
+
       echo "nixshare-health: $peer -- tearing down the shared nfs_client (all ''${#mps[@]} mount(s) + fscache)"
 
       # Arm the restore guarantee BEFORE the first stop, so any death from
@@ -605,9 +617,25 @@ writeShellApplication {
       # zero. Harmless no-op when the module is absent or not in use.
       modprobe -r cachefiles 2>/dev/null || true
 
+      # A successful umount command only proves namespace detachment. Open
+      # references can keep the old mount, its nfs_client, volumes and RPC
+      # transports alive after `umount -f -l` returns. Remounting at that
+      # point simply reconnects to the old client and makes the reset a
+      # no-op. Prove the captured kernel identities and their live TCP:2049
+      # sockets are gone before restore; the wait is explicitly bounded.
+      reset_incomplete=""
+      if ! nixshare_wait_for_nfs_teardown "$reset_teardown_timeout"; then
+        reset_incomplete="$nfs_teardown_state"
+      fi
+
       # Same code path the trap uses, so the normal and the interrupted case
       # can never drift apart. Clears the armed state on success.
       restore_torn_down
+
+      if [ -n "$reset_incomplete" ]; then
+        notify "$peer RESET INCOMPLETE [$reset_incomplete] after waiting ''${reset_teardown_timeout}s for kernel teardown. Mounts were restored, but the old client was not proven destroyed; this run is not a complete nfs_client reset. Open references or retained kernel transports require manual intervention."
+        continue
+      fi
 
       sleep 2
       final=0

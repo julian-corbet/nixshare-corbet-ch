@@ -312,6 +312,14 @@
             && syncthingOff.syncthing.enable == false;
 
           healthPackage = pkgs.callPackage ./pkgs/nixshare-health.nix { };
+          healthResetBehaviorFixture = pkgs.writeShellApplication {
+            name = "nixshare-health-reset-behavior-fixture";
+            runtimeInputs = [ pkgs.coreutils pkgs.gawk ];
+            text = ''
+              ${builtins.readFile ./pkgs/nixshare-health-reset.sh}
+              ${builtins.readFile ./tests/nixshare-health-reset-fixture.sh}
+            '';
+          };
         in
         {
           nixshare-sharenfs-injection-guard =
@@ -387,6 +395,14 @@
                 echo "rendered nixshare-health still recursively stats the mountpoint listing" >&2
                 exit 1
               fi
+              touch "$out"
+            '';
+
+          nixshare-health-reset-behavior = pkgs.runCommand
+            "nixshare-health-reset-behavior"
+            { nativeBuildInputs = [ healthResetBehaviorFixture ]; }
+            ''
+              nixshare-health-reset-behavior-fixture
               touch "$out"
             '';
         });

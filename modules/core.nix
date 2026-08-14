@@ -245,6 +245,7 @@ let
     consecutiveFailures = cfg.health.consecutiveFailures;
     cooldownSec = cfg.health.cooldownSec;
     recovery = cfg.health.recovery;
+    resetTeardownTimeoutSec = cfg.health.resetTeardownTimeoutSec;
     stateDir = cfg.health.stateDir;
     alertCommand = cfg.health.alertCommand;
     peers = healthPeerGroups;
@@ -524,6 +525,20 @@ in
           incident in pkgs/nixshare-health.nix's header). `reset-client`
           only ever runs on `protocol = "nfs"`, and never when the server is
           unreachable.
+        '';
+      };
+
+      resetTeardownTimeoutSec = mkOption {
+        type = types.ints.positive;
+        default = 30;
+        description = ''
+          Maximum time `reset-client` waits after force-lazy-unmounting the
+          peer before remounting. A successful unmount command is not proof
+          that open references released the old NFS client. The monitor
+          requires the captured client and volume rows plus its live
+          TCP/2049 transports to disappear from the kernel within this
+          bound. Otherwise it restores the mounts and reports a typed
+          incomplete reset without claiming that the client was rebuilt.
         '';
       };
 

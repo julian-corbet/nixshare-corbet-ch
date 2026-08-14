@@ -250,9 +250,15 @@ incident, twice.
 The client is destroyed only when **every** mount of that server is gone
 **and** the fscache cookies pinning it are released. So `reset-client` stops
 all of the peer's mounts and automounts, stops `cachefilesd`, unloads the
-`cachefiles` module, then brings it all back. That is why the config is
-rendered as peer groups rather than a flat share list: a per-share view
-makes the only effective cure unexpressible.
+`cachefiles` module, and then waits for the captured client and volume rows
+and all of its live TCP/2049 sockets to disappear before bringing anything
+back. A successful `umount -f -l` only proves namespace detachment: an open
+reference can keep the old client alive. If that kernel state remains after
+`health.resetTeardownTimeoutSec`, the monitor restores the mounts but reports
+`RESET INCOMPLETE` with separate client, volume, and socket counts. It never
+calls that path a complete client reset. That is why the config is rendered
+as peer groups rather than a flat share list: a per-share view makes the only
+effective cure unexpressible.
 
 `reset-client` only ever runs for `protocol = "nfs"`, only after a plain
 remount has already been tried and failed, and never when the server is
@@ -314,6 +320,10 @@ them would have made recovery impossible while looking like it ran.
 - `watchdog.alertCommand` — a shell command prefix the watchdog appends a
   message to and runs on every force-unmount; intended to be filled from
   nixpush's `mkSendCommand` (see Quickstart), not a hard dependency.
+- `health.resetTeardownTimeoutSec` (default `30`) — bounded wait between
+  force-lazy-unmount and remount during `reset-client`. Completion requires
+  the target NFS client, its volumes, and live TCP/2049 transports to vanish;
+  retained state produces a typed incomplete-reset alert instead.
 
 `nixshare.providers.*` — internal registry, set by provider
 modules, not meant to be set directly.
