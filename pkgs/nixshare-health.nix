@@ -103,7 +103,7 @@
 # (consecutive-failure counts, cure cooldown stamps) lives in files under
 # the configured stateDir, not in the process. A genuinely resident daemon
 # would warrant Rust; this is not that.
-{ lib, writeShellApplication, jq, systemd, util-linux, coreutils, kmod, iproute2 }:
+{ lib, writeShellApplication, bash, jq, systemd, util-linux, coreutils, kmod, iproute2 }:
 
 writeShellApplication {
   name = "nixshare-health";
@@ -176,10 +176,15 @@ writeShellApplication {
     # separates "client is wedged" (curable) from "server is down or the
     # network is gone" (not curable, and thrashing would make it worse).
     # bash's own /dev/tcp -- no extra tool, no ICMP dependency (ICMP can be
-    # filtered while 2049 is fine, and vice versa).
+    # filtered while 2049 is fine, and vice versa). The absolute store path
+    # is load-bearing: system-manager units receive a store-only PATH, and a
+    # bare `bash` here once made every live server look unreachable while
+    # stderr suppression hid the missing-command error. This gate decides
+    # whether client recovery runs at all, so it must not depend on ambient
+    # PATH.
     server_reachable() {
       local peer="$1" port="''${2:-2049}"
-      timeout 5 bash -c "exec 3<>/dev/tcp/$peer/$port" 2>/dev/null
+      timeout 5 ${lib.getExe bash} -c "exec 3<>/dev/tcp/$peer/$port" 2>/dev/null
     }
 
     # Milliseconds for TWO probes against the mountpoint -- see "THE PROBE

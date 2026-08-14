@@ -296,6 +296,8 @@
             # mentions this option must not acquire a sync daemon because it wanted an NFS mount.
             && syncthingOff.archPackages == [ ]
             && syncthingOff.syncthing.enable == false;
+
+          healthPackage = pkgs.callPackage ./pkgs/nixshare-health.nix { };
         in
         {
           nixshare-sharenfs-injection-guard =
@@ -331,6 +333,21 @@
               nixshare syncthing contract FAILED:
                 enabled  -> archPackages = ${builtins.toJSON syncthingOn.archPackages}, aurPackages = ${builtins.toJSON syncthingOn.aurPackages}
                 disabled -> archPackages = ${builtins.toJSON syncthingOff.archPackages}
+            '';
+
+          # Build-time inspection of the actual rendered executable, not the
+          # Nix source: the server-reachability gate must carry an absolute
+          # Bash store path so it works under system-manager's clean unit PATH.
+          nixshare-health-clean-path-contract = pkgs.runCommand
+            "nixshare-health-clean-path-contract"
+            { }
+            ''
+              if ! grep -F ${lib.escapeShellArg (lib.getExe pkgs.bash)} \
+                ${healthPackage}/bin/nixshare-health >/dev/null; then
+                echo "rendered nixshare-health does not reference its Bash interpreter absolutely" >&2
+                exit 1
+              fi
+              touch "$out"
             '';
         });
     };
