@@ -4,12 +4,79 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
+# Two independent kinds of job, and nothing here `needs:` anything else here. A failure in one
+# system's checks must report as that system's failure and nothing more -- never cancel, mask, or
+# delay the others.
 jobs:
-  nix-flake-check:
-    runs-on: ubuntu-latest
+  # ONE LEG PER SYSTEM THE FLAKE DECLARES, EACH ON A RUNNER OF THAT ARCHITECTURE.
+  #
+  # A bare `nix flake check` builds only the checks for the runner's OWN system, prints
+  # "warning: The check omitted these incompatible systems: ..." for the rest -- and exits 0. Green,
+  # having evaluated half of what the flake claims. That warning is the bug this file exists to
+  # close.
+  #
+  # The obvious fix, a single x86_64 leg with `--all-systems`, does not work for a flake that
+  # declares aarch64: evaluation is architecture-independent but BUILDING is not, and every check
+  # here is a derivation that must actually build. An x86_64 runner refuses with
+  # "Cannot build ... Reason: platform mismatch. Required system: 'aarch64-linux'". So the honest
+  # way to keep the aarch64 claim is to build it on aarch64 hardware, which GitHub provides free to
+  # public repositories.
+  check:
+    name: nix flake check (${{ matrix.system }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 10
+    strategy:
+      # GitHub cancels every other matrix leg the moment one fails, by default. That default is
+      # exactly backwards: the point of a per-system matrix is that each system reports its own
+      # result, including when a sibling is broken.
+      fail-fast: false
+      matrix:
+        include:
+          - system: x86_64-linux
+            runner: ubuntu-latest
+          - system: aarch64-linux
+            runner: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
       - uses: cachix/install-nix-action@v27
-      - name: nix flake check
-        run: nix flake check --print-build-logs
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      # The leg is only worth anything if the runner really is the architecture it claims: an
+      # aarch64 leg that quietly landed on an x86_64 runner would re-create the very "green having
+      # tested nothing" failure this workflow removes, just one level further down. Assert first,
+      # check second. `--keep-going` then makes a failing check report every OTHER check's result
+      # as well, instead of the run ending at the first failure.
+      - name: nix flake check (${{ matrix.system }})
+        run: |
+          set -euo pipefail
+          actual=$(nix eval --impure --raw --expr builtins.currentSystem)
+          if [ "$actual" != "${{ matrix.system }}" ]; then
+            echo "runner is '$actual', but this leg exists to check '${{ matrix.system }}'" >&2
+            exit 1
+          fi
+          nix flake check --keep-going --print-build-logs
+
+  # THE HALF A SINGLE RUNNER *CAN* DO FOR EVERY SYSTEM AT ONCE.
+  #
+  # Evaluation is architecture-independent, so one x86_64 runner can force every check derivation
+  # of EVERY declared system to evaluate -- `--no-build` stops exactly where the platform mismatch
+  # would begin, leaving the building to the legs above. This is what makes the matrix's coverage
+  # auditable rather than assumed: a system added to `systems` in flake.nix but forgotten in the
+  # matrix above still gets evaluated here, and an eval error in it fails this job, instead of
+  # sailing through unexamined behind an omission warning nobody reads.
+  eval-all-systems:
+    name: every declared system evaluates
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v27
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+      - name: nix flake check --all-systems --no-build
+        run: nix flake check --all-systems --no-build --keep-going --print-build-logs
