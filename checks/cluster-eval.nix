@@ -128,8 +128,66 @@ let
 
     "the gateway's arguments name the same port and the same directories it declares elsewhere" =
       let e = catalogue.versitygw; in
-      lib.elem ":${toString e.ports.${e.primaryPort}.number}" e.args
-      && lib.all (p: lib.elem p e.args) (lib.attrValues e.state);
+      lib.elem ":${toString e.ports.${e.primaryPort}.number}" (e.args ++ e.trailingArgs)
+      && lib.all (p: lib.elem p (e.args ++ e.trailingArgs)) (lib.attrValues e.state);
+
+    # A flag in `trailingArgs` is a mis-filed entry rather than a harmless one: everything there is
+    # pinned to the END of the command line, so a flag put there would sit after the operands and a
+    # deployment's own arguments would never be able to precede it.
+    "nothing in any catalogued trailingArgs is a flag" =
+      lib.all
+        (e: lib.all (a: !(lib.hasPrefix "-" a)) e.trailingArgs)
+        (lib.attrValues catalogue);
+
+    # `null` is the only way to say "not established". A half-filled entry would render half a
+    # securityContext onto a live container, which is the one outcome this field exists to prevent.
+    "an established privileges entry states both halves, and an unestablished one is null" =
+      lib.all
+        (e: e.privileges == null || (e.privileges ? needsCapabilities && e.privileges ? escalates))
+        (lib.attrValues catalogue);
+
+    # The other direction of the split, asserted over the catalogue rather than trusted: what a
+    # workload COSTS is one cluster's business, so no entry may carry a compute budget at all.
+    "no catalogued application states what it costs on somebody's hardware" =
+      lib.all (e: !(e ? resources)) (lib.attrValues catalogue);
+
+    # ── The terms a DECLARATION owns, read back off the grammar ──────────────────────────────
+    "a declaration's own arguments land between the catalogue's flags and its positional tail" =
+      let a = gateway.args; in
+      lib.take 2 a == [ "--port" ":7070" ]
+      && lib.sublist (lib.length a - 4) 4 a
+      == [ "--cors-allow-origin" "https://example.com" "posix" "/data" ];
+
+    "the objects take the name the declaration gives them, and the declaration keeps its own key" =
+      gateway.name == "example-gateway-legacy"
+      && apps ? example-gateway
+      && !(apps ? example-gateway-legacy)
+      && apps.example-share.name == "example-share";
+
+    "what the process needs from the kernel comes from the catalogue, and an unestablished one renders nothing" =
+      apps.example-share.security.allowPrivilegeEscalation == false
+      && apps.example-share.security.capabilitiesDrop == [ "ALL" ]
+      && gateway.security.allowPrivilegeEscalation == null
+      && gateway.security.capabilitiesDrop == [ ]
+      && apps.example-sync.security.allowPrivilegeEscalation == null;
+
+    # `false` is a manifest field that says what was already true; `null` is absence. An
+    # application whose live container carries no root-filesystem field must keep carrying none.
+    "nothing claims a read-only root filesystem it has not proven" =
+      lib.all (a: a.security.readOnlyRootFilesystem == null) (lib.attrValues apps);
+
+    "a compute budget is the declaration's, and nothing asked for is nothing rendered" =
+      gateway.resources.requests == { cpu = "50m"; memory = "64Mi"; }
+      && gateway.resources.limits == { memory = "512Mi"; }
+      && apps.example-share.resources.requests == { }
+      && apps.example-share.resources.limits == { };
+
+    # Written per variable, rendered per Secret: two variables out of one Secret are ONE reference
+    # in the pod spec, and the regrouping is this module's job rather than the declaration's.
+    "a variable this deployment adds is grouped under the Secret it comes from" =
+      gateway.secrets.example-gateway-tenant.env
+      == { EXAMPLE_TENANT_ACCESS_KEY = "example-access-key"; EXAMPLE_TENANT_SECRET_KEY = "example-secret-key"; }
+      && gateway.secrets.example-gateway-tenant.envFrom == false;
 
     # ── Unwritable, not merely refused ────────────────────────────────────────────────────────
     "an application the catalogue does not hold is not a value this option has" =
@@ -173,6 +231,24 @@ let
     "two workloads anchoring one namespace is refused" =
       failsWith "Exactly one workload may create a namespace"
         (with' { nixshare.applications.example-gateway.createNamespace = true; });
+
+    "naming one Secret in secretEnv and again as a credential is refused" =
+      failsWith "names Secret"
+        (with' {
+          nixshare.applications.example-gateway.secretEnv.EXAMPLE_OTHER_KEY = {
+            secret = "root";
+            key = "example-other-key";
+          };
+        });
+
+    "adding a variable the catalogue says the application already reads is refused" =
+      failsWith "already says the application reads it"
+        (with' {
+          nixshare.applications.example-gateway.secretEnv.ROOT_ACCESS_KEY = {
+            secret = "example-elsewhere";
+            key = "example-access-key";
+          };
+        });
 
     "two workloads on one slot is refused" =
       failsWith "is claimed by 2 applications"

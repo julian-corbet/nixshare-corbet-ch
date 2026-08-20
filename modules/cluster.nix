@@ -37,7 +37,11 @@
 #     can say which Secret holds it, so a gateway whose root keys were forgotten is refused rather
 #     than started with none;
 #   - the catalogue says whether a directory MAY BE CREATED EMPTY, and the consumer is not asked,
-#     because that is a fact about the software and getting it wrong is silent in both directions.
+#     because that is a fact about the software and getting it wrong is silent in both directions;
+#   - the catalogue says WHAT THE PROCESS NEEDS FROM THE KERNEL and the consumer is not asked that
+#     either, because "this software needs no Linux capability" is a property of the software; what
+#     a consumer decides is how much COMPUTE to give it, which is a statement about one cluster's
+#     appetite and appears nowhere in the catalogue.
 { config, lib, ... }:
 
 let
@@ -72,6 +76,42 @@ let
             if lib.elem key entry.mayStartEmpty then "DirectoryOrCreate" else "Directory";
         })
       w.state;
+
+  # THE COMMAND LINE, in three parts and one order. The catalogue holds the flags the software
+  # always takes AND the positional words it must end with; a declaration's own arguments go
+  # between them. Appending everything to one list would put a deployment's flag after a positional
+  # argument, which is a different command line and, for anything that reads its operands off the
+  # end of argv, not a valid one.
+  argsOf = entry: w: entry.args ++ w.args ++ entry.trailingArgs;
+
+  # WHAT MAY BE TAKEN AWAY FROM THE PROCESS, derived from what the catalogue says it needs. Two
+  # facts about the software become two restrictions on the container, and neither is a policy this
+  # module invents: an application that needs no capability can be given none, and one that runs no
+  # setuid helper can be forbidden to gain privileges.
+  #
+  # An application whose privileges are NOT ESTABLISHED renders no securityContext at all -- not an
+  # empty one, and not a guessed one. That is the difference between "we know it needs nothing" and
+  # "nobody has looked", and only the first is safe to enforce on a running pod.
+  securityOf = entry:
+    lib.optionalAttrs (entry.privileges != null) {
+      security =
+        lib.optionalAttrs (!entry.privileges.escalates) { allowPrivilegeEscalation = false; }
+        // lib.optionalAttrs (!entry.privileges.needsCapabilities) { capabilitiesDrop = [ "ALL" ]; };
+    };
+
+  # HOW MUCH OF ONE CLUSTER THIS WORKLOAD MAY HAVE. Entirely the declaration's: the catalogue knows
+  # what the software does, not what it costs on somebody's hardware, and the same gateway is a
+  # rounding error on one box and the whole box on another. Only cpu and memory, because everything
+  # else a container can request -- a device plugin's resource name above all -- is the NAME of
+  # something a particular cluster installed, and this repository writes no fleet facts down.
+  resourcesOf = w:
+    let
+      pick = field: lib.filterAttrs (_: v: v != null) {
+        cpu = w.resources.cpu.${field};
+        memory = w.resources.memory.${field};
+      };
+    in
+    { requests = pick "request"; limits = pick "limit"; };
 
   probesOf = entry:
     lib.optionalAttrs (entry.readiness != null)
@@ -115,7 +155,21 @@ let
   extraSecretsOf = w:
     lib.listToAttrs (map (s: lib.nameValuePair s { secret = s; envFrom = true; }) w.envFromSecrets);
 
-  secretsOf = w: credentialsOf w // extraSecretsOf w;
+  # Variables THIS DEPLOYMENT adds out of Secrets the catalogue knows nothing about, named one by
+  # one. The middle term between `credentials` (the catalogue says the software reads it) and
+  # `envFromSecrets` (whatever the Secret happens to hold): a deployment that grows its own tooling
+  # around an application -- a tenant identity, a reconciler's key -- needs the variables to exist
+  # and still has no business loading a Secret wholesale.
+  #
+  # DECLARED PER VARIABLE, REGROUPED PER SECRET. A variable is what a process reads and is the unit
+  # somebody actually knows; a Secret reference is how a pod spec spells it, and that regrouping is
+  # this module's job rather than the declaration's.
+  secretEnvOf = w:
+    lib.mapAttrs
+      (_: pairs: { env = lib.listToAttrs (map (p: lib.nameValuePair p.name p.value.key) pairs); })
+      (lib.groupBy (p: p.value.secret) (lib.mapAttrsToList lib.nameValuePair w.secretEnv));
+
+  secretsOf = w: credentialsOf w // extraSecretsOf w // secretEnvOf w;
 
   # Handed to the band model only when the consumer says it is part of the render: `origin` and
   # `slot` are ITS terms, and defining them into a render that does not declare them is an eval
@@ -136,9 +190,12 @@ let
       init = initOf entry w;
       secrets = secretsOf w;
       env = entry.env // w.env;
-      args = entry.args ++ w.args;
+      args = argsOf entry w;
       probes = probesOf entry;
+      resources = resourcesOf w;
     }
+    // securityOf entry
+    // lib.optionalAttrs (w.objectName != null) { name = w.objectName; }
     // lib.optionalAttrs (w.wake != null) { inherit (w) wake; }
     // addressingOf w;
 
@@ -273,6 +330,49 @@ let
       })
     workloads;
 
+  # A Secret reaches the pod under ONE reference or the module silently keeps the last definition of
+  # it: the grammar keys its secrets by a local name, and this module builds those keys from three
+  # different places -- a catalogued credential's bundle name, a wholesale load's Secret name, and
+  # a `secretEnv` entry's Secret name. Two of them landing on one key is not a merge.
+  secretEnvNameAssertions = map
+    (x:
+      let
+        inherit (x) name w;
+        keyed = lib.unique (lib.mapAttrsToList (_: e: e.secret) w.secretEnv);
+        clash = lib.intersectLists keyed (lib.attrNames w.credentials ++ w.envFromSecrets);
+      in
+      {
+        assertion = clash == [ ];
+        message =
+          "nixshare: application `${name}` names Secret "
+          + lib.concatMapStringsSep ", " (k: "`${k}`") clash
+          + " in `secretEnv` and again as a catalogued credential or a wholesale `envFromSecrets` "
+          + "load. One reference would silently replace the other, so the variables somebody wrote "
+          + "down would quietly become whichever definition happened to win.";
+      })
+    workloads;
+
+  # `secretEnv` is for what this DEPLOYMENT adds. A variable the catalogue already says the software
+  # reads has an owner, and it is not the declaration: redefining it there is a deployment deciding
+  # what the process reads its root credential out of, which is the half this repository holds.
+  secretEnvVarAssertions = lib.concatMap
+    (x:
+      let
+        inherit (x) name w entry;
+        catalogued = lib.concatLists (lib.attrValues entry.credentials);
+        clash = lib.intersectLists (lib.attrNames w.secretEnv) catalogued;
+      in
+      [{
+        assertion = clash == [ ];
+        message =
+          "nixshare: application `${name}` adds "
+          + lib.concatMapStringsSep ", " (k: "`${k}`") clash
+          + " through `secretEnv`, and the catalogue already says the application reads it as one "
+          + "of its own credentials. That variable arrives through `credentials`, where the "
+          + "catalogue can check that every one the process reads is supplied and no other is.";
+      }])
+    workloads;
+
   # A warning is `{ when; message; }` -- the renderer decides whether to print it, so the condition
   # travels with the text rather than being applied here.
   warnings = lib.concatMap
@@ -302,6 +402,22 @@ let
       description = ''
         Whether to render this workload. Declaring the attribute is declaring the workload, so this
         defaults to true; set false to park a declaration without rendering it.
+      '';
+    };
+
+    objectName = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      description = ''
+        THE NAME THE RENDERED OBJECTS CARRY, when it is not the name this declaration is keyed by.
+        Null (the default) names them after the key, which is what a new workload wants.
+
+        IT EXISTS FOR OBJECTS THAT ALREADY EXIST. A Deployment's selector is immutable and a
+        Service's endpoints follow the name, so a cluster that has been running this application
+        under some older name cannot be renamed onto a tidier one without deleting and recreating
+        it -- which for everything catalogued here means the thing stops while it happens. What a
+        live object is called is one deployment's history, so this is a value and not knowledge:
+        the catalogue never learns that somebody's gateway is called something else.
       '';
     };
 
@@ -459,10 +575,107 @@ let
       '';
     };
 
+    secretEnv = lib.mkOption {
+      default = { };
+      example = lib.literalExpression ''
+        { EXAMPLE_TENANT_KEY = { secret = "example-tenant"; key = "access-key"; }; }
+      '';
+      description = ''
+        VARIABLES THIS DEPLOYMENT ADDS out of Secrets the catalogue knows nothing about, keyed by
+        the variable and named one at a time. The middle term between the two that already exist:
+        `credentials` is for what the catalogue says the SOFTWARE reads, and `envFromSecrets` hands
+        over whatever a Secret happens to contain.
+
+        It is for the tooling a deployment grows AROUND an application -- a tenant identity below
+        the root credential, a reconciler's own key -- which is real, is nobody else's business, and
+        still does not justify loading a Secret wholesale. Naming a variable the catalogue already
+        holds is an eval error: that one arrives through `credentials`, where it is checked.
+      '';
+      type = lib.types.attrsOf (lib.types.submodule {
+        options = {
+          secret = lib.mkOption {
+            type = lib.types.str;
+            description = "NAME of an existing Secret. Named rather than carried, exactly like `credentials`.";
+          };
+          key = lib.mkOption {
+            type = lib.types.str;
+            description = "Key inside that Secret whose value this variable takes.";
+          };
+        };
+      });
+    };
+
+    resources = lib.mkOption {
+      default = { };
+      description = ''
+        HOW MUCH OF ONE CLUSTER this workload may have. Entirely a deployment's, and the clearest
+        case of it in this whole surface: the catalogue knows what the software does, not what it
+        costs on somebody's hardware, and the same gateway is a rounding error on one machine and
+        the whole of another. Unset renders nothing, which is a workload the scheduler places as if
+        it were free.
+
+        ONLY CPU AND MEMORY. Everything else a container can ask for is the NAME of something a
+        particular cluster installed -- a device plugin's resource above all -- and this repository
+        writes no fleet facts down. A request is what the scheduler must find; a limit is a ceiling,
+        and the two are not the same statement: a memory limit is a kill threshold, a cpu limit is
+        a throttle that slows a workload nothing else on the node is competing with.
+      '';
+      type = lib.types.submodule {
+        options = {
+          cpu = lib.mkOption {
+            default = { };
+            description = "Processor time, in Kubernetes' own units (`50m` is a twentieth of a core).";
+            type = lib.types.submodule {
+              options = {
+                request = lib.mkOption {
+                  type = lib.types.nullOr lib.types.str;
+                  default = null;
+                  example = "50m";
+                  description = "What the scheduler must find for this workload.";
+                };
+                limit = lib.mkOption {
+                  type = lib.types.nullOr lib.types.str;
+                  default = null;
+                  description = ''
+                    A ceiling, enforced as a THROTTLE rather than a kill. Usually the wrong term to
+                    reach for: it slows the workload even on an idle node.
+                  '';
+                };
+              };
+            };
+          };
+          memory = lib.mkOption {
+            default = { };
+            description = "Memory, in Kubernetes' own units (`64Mi`).";
+            type = lib.types.submodule {
+              options = {
+                request = lib.mkOption {
+                  type = lib.types.nullOr lib.types.str;
+                  default = null;
+                  example = "64Mi";
+                  description = "What the scheduler must find for this workload.";
+                };
+                limit = lib.mkOption {
+                  type = lib.types.nullOr lib.types.str;
+                  default = null;
+                  example = "512Mi";
+                  description = "A ceiling, enforced as a KILL. What you want for anything that leaks.";
+                };
+              };
+            };
+          };
+        };
+      };
+    };
+
     args = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [ ];
-      description = "Arguments appended to whatever the catalogue sets.";
+      description = ''
+        Arguments this deployment adds. They land AFTER the flags the catalogue sets and BEFORE the
+        positional words it says the command line must end with, because that is the only place an
+        added flag can go for software that reads its operands off the end of argv.
+      '';
     };
 
     image = lib.mkOption {
@@ -563,7 +776,9 @@ in
       ++ anchorAssertions
       ++ slotAssertions
       ++ idleAssertions
-      ++ secretNameAssertions;
+      ++ secretNameAssertions
+      ++ secretEnvNameAssertions
+      ++ secretEnvVarAssertions;
     nixidy.warnings = warnings;
   };
 }

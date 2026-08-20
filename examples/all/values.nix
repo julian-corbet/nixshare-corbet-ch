@@ -13,7 +13,9 @@
 #     directory it backs on a node path;
 #   - one that must not sleep, writing TWO directories with different answers to "may this be
 #     created empty", proving a required credential and rendering an init container out of its own
-#     image before the process starts;
+#     image before the process starts -- and, because it is also the one whose command line ends in
+#     positional arguments, the one that shows where a deployment's own flag has to land, under a
+#     name its objects already carry rather than the one it is keyed by;
 #   - one that must not sleep either, in a namespace of its own, mixing a claim-backed directory
 #     with a node-path one and declaring ports on three protocols.
 {
@@ -49,6 +51,24 @@
     image = "registry.example.com/example-org/example-gateway:0.0.0@sha256:0000000000000000000000000000000000000000000000000000000000000000";
     exposure = "public";
     slot = 41;
+
+    # THE OBJECTS ARE OLDER THAN THIS DECLARATION and carry a name nothing may rename: a
+    # Deployment's selector is immutable, so tidying the name is delete-and-recreate, which for a
+    # gateway means the endpoint disappears while it happens. Keyed here by what it IS, rendered
+    # under what it is CALLED.
+    objectName = "example-gateway-legacy";
+
+    # ONE ADDED FLAG, and the reason `trailingArgs` exists. The catalogue's own flags come first,
+    # this lands next, and the positional `posix /data` the gateway reads off the end of argv stays
+    # last -- which a single appended list could not do.
+    args = [ "--cors-allow-origin" "https://example.com" ];
+
+    # One cluster's appetite, stated nowhere in the catalogue.
+    resources = {
+      cpu.request = "50m";
+      memory = { request = "64Mi"; limit = "512Mi"; };
+    };
+
     state.data.hostPath = "/example/state/objects";
     state.iam.hostPath = "/example/state/objects-iam";
     credentials.root = {
@@ -57,6 +77,13 @@
         ROOT_ACCESS_KEY = "example-access-key";
         ROOT_SECRET_KEY = "example-secret-key";
       };
+    };
+
+    # A TENANT BELOW THE ROOT CREDENTIAL: not something the gateway reads, so the catalogue has no
+    # word for it, and still not a reason to load a whole Secret. Named variable by variable.
+    secretEnv = {
+      EXAMPLE_TENANT_ACCESS_KEY = { secret = "example-gateway-tenant"; key = "example-access-key"; };
+      EXAMPLE_TENANT_SECRET_KEY = { secret = "example-gateway-tenant"; key = "example-secret-key"; };
     };
   };
 

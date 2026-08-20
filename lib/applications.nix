@@ -38,6 +38,18 @@
 #   mayIdle        Whether sleeping to zero replicas is SAFE for this software -- not whether it
 #                  is wanted, which is a deployment's call. Two of the three here must not sleep,
 #                  and neither reason is about size.
+#
+#   trailingArgs   The words the command line must END with. A flag can go anywhere; a POSITIONAL
+#                  argument cannot, and a catalogue that kept one `args` list would append a
+#                  deployment's own flags AFTER the positional pair and hand the process a command
+#                  line it rejects. The ordering is the software's, so both halves are held here
+#                  and a declaration's arguments go BETWEEN them.
+#
+#   privileges     What the process needs from the KERNEL, and therefore what may be taken away
+#                  from it. `null` means NOBODY HAS ESTABLISHED IT -- which is not "it needs
+#                  everything" and not "it needs nothing", and renders no securityContext at all,
+#                  so an application whose live container carries none keeps carrying none.
+#                  Establishing it is a real change to a running pod, not a documentation edit.
 {}:
 {
   applications = {
@@ -70,8 +82,20 @@
 
       writeProbe = [ ];
 
+      # NOTHING FROM THE KERNEL, and this one IS established: it is a Node HTTP server that binds
+      # one high port, writes one directory and shells out to nothing. It needs no Linux capability
+      # and runs no setuid helper, so both halves of the container's privilege can be closed --
+      # which is a statement about the software, true wherever it runs, and not a policy somebody
+      # applied to one cluster.
+      #
+      # WHAT IS DELIBERATELY NOT CLAIMED HERE is a read-only root filesystem. It very probably
+      # holds, and "very probably" is the wrong standard for a field whose failure mode is a
+      # process that starts and then cannot write.
+      privileges = { needsCapabilities = false; escalates = false; };
+
       env = { };
       args = [ ];
+      trailingArgs = [ ];
 
       # `/api/configs` proxies through to the backend, so Ready means the FULL app serves rather
       # than that the frontend socket is open. That distinction is load-bearing under a wake front:
@@ -145,6 +169,13 @@
       # Touching and removing one file first turns that into a pod that never becomes ready.
       writeProbe = [ "data" ];
 
+      # NOT ESTABLISHED, and left that way on purpose. Nobody has checked what the gateway wants
+      # from the kernel, and a catalogue that guessed "nothing" would be hardening every running
+      # instance of it on a guess -- silently, since a dropped capability the process actually
+      # needed surfaces as a syscall failing somewhere inside an S3 request rather than as a pod
+      # that refuses to start.
+      privileges = null;
+
       env = { };
 
       # The gateway takes its bind spec and its backend root on the command line, so the port and
@@ -166,9 +197,14 @@
         "/iam"
         "--access-log"
         "/dev/stdout"
-        "posix"
-        "/data"
       ];
+
+      # THE BACKEND SELECTOR AND ITS ROOT, and they are POSITIONAL: the gateway reads them off the
+      # end of its argv, so every flag -- the catalogue's above and whatever a deployment adds --
+      # has to come before them. Keeping them in `args` would mean a declaration that adds one flag
+      # gets a command line ending `posix /data --its-flag`, which is not the same command and is
+      # not a command this gateway accepts. The order is the software's; this is where it is held.
+      trailingArgs = [ "posix" "/data" ];
 
       readiness = {
         path = "/health";
@@ -254,8 +290,16 @@
 
       writeProbe = [ ];
 
+      # NOT ESTABLISHED, and this is the entry where guessing "nothing" would be plainly wrong.
+      # The image starts as root, chowns its own configuration and drops to the account it was
+      # told to run as -- which is privilege escalation performed on purpose, by the only part of
+      # the image that can. Closing it here would produce a container that cannot become the user
+      # whose files it is supposed to be reading.
+      privileges = null;
+
       env = { };
       args = [ ];
+      trailingArgs = [ ];
 
       # THE ONE BUDGET HERE THAT IS NOT READ OFF A RUNNING DEPLOYMENT. Every other probe in this
       # catalogue comes from an installation that is live; this application is still declared

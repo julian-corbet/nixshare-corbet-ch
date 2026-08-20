@@ -578,6 +578,26 @@ object gateway pointed at an empty backend reports every bucket as gone; a sync
 client pointed at an empty identity directory quietly becomes a different device),
 and it is a fact about the software rather than about anybody's cluster.
 
+The same split decides everything else the surface grew. The catalogue holds the
+words a command line must *end* with, because an application that reads its
+operands off the end of `argv` cannot have a deployment's own flag appended after
+them — so a declaration's arguments land between the catalogue's flags and its
+positional tail rather than at the end of one list. It holds what a process needs
+from the **kernel**, because "this software needs no Linux capability and runs no
+setuid helper" is true wherever it runs; where nobody has established that, the
+entry is `null` and *no* `securityContext` is rendered, which is not the same as
+rendering permission denied — an application whose live container carries no
+hardening keeps carrying none until somebody measures it.
+
+A declaration holds the rest: how much cpu and memory this cluster is willing to
+give the workload (only those two — everything else a container can request is the
+name of something a particular cluster installed); the name its objects already
+carry, for a workload that predates the declaration and whose Deployment selector
+is immutable; and the variables a deployment adds around an application out of
+Secrets the catalogue knows nothing about — a tenant below a root credential, a
+reconciler's key — named one at a time rather than loaded wholesale. None of those
+is a fact about the software, so none of them is in the catalogue.
+
 ## Non-goals (v1)
 
 - **A resident watchdog daemon.** The watchdog is a systemd timer +

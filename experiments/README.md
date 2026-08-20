@@ -117,3 +117,33 @@ against the mountpoint), but this is reasoned from `umount(8)`'s documented
 behavior, not exercised against a real stuck mount.
 
 **Status:** open.
+
+## 006 — what do the object gateway and the sync client actually need from the kernel?
+
+**Question:** `lib/applications.nix` records a `privileges` entry only for
+the file-sharing application, where it is established: no Linux
+capability, no setuid helper, so the rendered container drops `ALL` and
+forbids privilege escalation. The other two entries are `null`, meaning
+nobody has established it, and `null` renders no `securityContext` at all.
+For the object gateway that is very likely an *unclaimed* fact rather than
+an interesting one — a static Go binary serving HTTP over a POSIX tree
+plausibly needs nothing either. For the sync client it is genuinely open in
+the other direction: the image starts as root and drops to the account it
+was told to run as, which is escalation performed on purpose, so "needs
+nothing" would be actively wrong there.
+
+**Hypothesis:** the gateway closes the same way the file-sharing
+application did, once somebody runs it with `ALL` dropped and exercises a
+multipart upload, a bucket listing and the administration API rather than
+reasoning about it. The sync client stays `null` until the field can say
+something more precise than a boolean, because the honest answer for it is
+"it needs exactly the privileges its own privilege-dropping needs".
+
+**Why it is not closed by guessing:** the field is rendered onto a running
+container. Claiming it in the catalogue hardens every deployment of that
+application at once, and a capability the process actually needed surfaces
+as a syscall failing inside a request rather than as a pod that refuses to
+start — which is the failure this repository's other catalogue fields exist
+to avoid, not one to introduce.
+
+**Status:** open.

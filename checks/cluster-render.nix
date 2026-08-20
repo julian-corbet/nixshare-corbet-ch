@@ -31,15 +31,18 @@ pkgs.runCommand "nixshare-cluster-render"
   y() { yq -r "$1" "$2"; }
 
   echo "== the environment renders all three workloads and nothing else =="
+  # The gateway's directory is named `example-gateway-legacy`, not `example-gateway`: it declares an
+  # `objectName`, and the objects -- and therefore the rendered path -- take THAT. The declaration
+  # is still keyed by what the workload IS, which is what every other option here reads.
   rendered=$(ls "$manifests" | sort | tr '\n' ' ' | sed 's/ $//')
-  check "rendered apps" "apps example-gateway example-share example-sync" "$rendered"
+  check "rendered apps" "apps example-gateway-legacy example-share example-sync" "$rendered"
 
   share="$manifests/example-share"
-  gw="$manifests/example-gateway"
+  gw="$manifests/example-gateway-legacy"
   sync="$manifests/example-sync"
 
   shareD="$share/Deployment-example-share.yaml"
-  gwD="$gw/Deployment-example-gateway.yaml"
+  gwD="$gw/Deployment-example-gateway-legacy.yaml"
   syncD="$sync/Deployment-example-sync.yaml"
 
   echo "== the catalogue's ports reach the container, and no declaration stated one =="
@@ -119,13 +122,69 @@ pkgs.runCommand "nixshare-cluster-render"
   check "share liveness is not HTTP" "null" "$(y '.spec.template.spec.containers[0].livenessProbe.httpGet' $shareD)"
   check "gateway liveness slack" "5" "$(y '.spec.template.spec.containers[0].livenessProbe.timeoutSeconds' $gwD)"
 
+  echo "== an object is named by what it is CALLED here, while the declaration is keyed by what it IS =="
+  check "gateway object name" "example-gateway-legacy" "$(y '.metadata.name' $gwD)"
+  check "gateway selector follows the name" "example-gateway-legacy" \
+    "$(y '.spec.selector.matchLabels."app.kubernetes.io/name"' $gwD)"
+  check "gateway container follows the name" "example-gateway-legacy" \
+    "$(y '.spec.template.spec.containers[0].name' $gwD)"
+  check "a workload that renames nothing keeps its key" "example-share" "$(y '.metadata.name' $shareD)"
+
+  echo "== a deployment's own flag lands BEFORE the positional words the command line must end with =="
+  # The whole point of splitting the catalogue's arguments in two. One appended list would produce
+  # `... posix /data --cors-allow-origin https://example.com`, which is a different command line and
+  # not one this gateway accepts -- and nothing about the rendered pod would look wrong.
+  gwArgs=$(y '.spec.template.spec.containers[0].args | join(" ")' $gwD)
+  check "the catalogue's own flags come first" "--port :7070" "$(echo "$gwArgs" | cut -d' ' -f1,2)"
+  check "the positional words come last" "posix /data" "$(echo "$gwArgs" | awk '{print $(NF-1), $NF}')"
+  check "the declaration's flag is between them" "--access-log /dev/stdout --cors-allow-origin https://example.com posix /data" \
+    "$(echo "$gwArgs" | awk '{ o=""; for (i=NF-5; i<=NF; i++) o = o (o=="" ? "" : " ") $i; print o }')"
+
+  echo "== what the process needs from the KERNEL is the catalogue's, and an unestablished entry renders nothing =="
+  check "share drops every capability" "ALL" \
+    "$(y '.spec.template.spec.containers[0].securityContext.capabilities.drop[0]' $shareD)"
+  check "share cannot gain privileges" "false" \
+    "$(y '.spec.template.spec.containers[0].securityContext.allowPrivilegeEscalation' $shareD)"
+  # NOT the same as `false`, and this is the check that keeps it that way: an application whose
+  # privileges nobody has established carries no securityContext at all, so adopting this module
+  # does not harden a live container on a guess.
+  check "gateway carries no securityContext" "null" \
+    "$(y '.spec.template.spec.containers[0].securityContext' $gwD)"
+  check "sync carries no securityContext" "null" \
+    "$(y '.spec.template.spec.containers[0].securityContext' $syncD)"
+  # A read-only root filesystem is deliberately not claimed anywhere, and `false` is not absence:
+  # the field must not appear at all.
+  check "nothing states a root filesystem it has not proven" "null" \
+    "$(y '.spec.template.spec.containers[0].securityContext.readOnlyRootFilesystem' $shareD)"
+
+  echo "== how much of one cluster a workload may have is the declaration's, and unset renders nothing =="
+  check "gateway cpu request" "50m" "$(y '.spec.template.spec.containers[0].resources.requests.cpu' $gwD)"
+  check "gateway memory request" "64Mi" "$(y '.spec.template.spec.containers[0].resources.requests.memory' $gwD)"
+  check "gateway memory limit" "512Mi" "$(y '.spec.template.spec.containers[0].resources.limits.memory' $gwD)"
+  check "gateway takes no cpu ceiling" "null" "$(y '.spec.template.spec.containers[0].resources.limits.cpu' $gwD)"
+  check "a workload that asked for nothing renders no resources" "null" \
+    "$(y '.spec.template.spec.containers[0].resources' $shareD)"
+
+  echo "== a variable this deployment adds is still a reference, and still not a wholesale load =="
+  check "tenant key secret" "example-gateway-tenant" \
+    "$(y '.spec.template.spec.containers[0].env[] | select(.name == "EXAMPLE_TENANT_ACCESS_KEY") | .valueFrom.secretKeyRef.name' $gwD)"
+  check "tenant key ref" "example-access-key" \
+    "$(y '.spec.template.spec.containers[0].env[] | select(.name == "EXAMPLE_TENANT_ACCESS_KEY") | .valueFrom.secretKeyRef.key' $gwD)"
+  check "tenant key carries no literal value" "null" \
+    "$(y '.spec.template.spec.containers[0].env[] | select(.name == "EXAMPLE_TENANT_ACCESS_KEY") | .value' $gwD)"
+  # Two variables out of ONE Secret: the declaration is written per variable and the pod spec
+  # groups per Secret, which is this module's regrouping rather than the declaration's problem.
+  check "both tenant variables reached the pod" "2" \
+    "$(y '[.spec.template.spec.containers[0].env[] | select(.valueFrom.secretKeyRef.name == "example-gateway-tenant")] | length' $gwD)"
+  check "nothing was loaded wholesale" "null" "$(y '.spec.template.spec.containers[0].envFrom' $gwD)"
+
   echo "== the image is a tag when a version was given and a whole reference when one was =="
   check "share image" "stonith404/pingvin-share:0.0.0" "$(y '.spec.template.spec.containers[0].image' $shareD)"
   check "gateway digest-pinned" "true" \
     "$(y '.spec.template.spec.containers[0].image' $gwD | grep -q '@sha256:' && echo true || echo false)"
 
   echo "== no address is invented here: every Service is a plain ClusterIP with nothing pinned =="
-  for f in $share/Service-example-share.yaml $gw/Service-example-gateway.yaml $sync/Service-example-sync.yaml; do
+  for f in $share/Service-example-share.yaml $gw/Service-example-gateway-legacy.yaml $sync/Service-example-sync.yaml; do
     check "$(basename $f) type" "ClusterIP" "$(y '.spec.type' $f)"
     check "$(basename $f) no pinned IP" "null" "$(y '.spec.clusterIP' $f)"
     check "$(basename $f) no nodePort" "null" "$(y '.spec.ports[0].nodePort' $f)"
