@@ -130,6 +130,28 @@ pkgs.runCommand "nixshare-cluster-render"
     "$(y '.spec.template.spec.containers[0].name' $gwD)"
   check "a workload that renames nothing keeps its key" "example-share" "$(y '.metadata.name' $shareD)"
 
+  echo "== adopting objects that already exist changes the APPLICATION, and only for the one that does =="
+  # The one term here that renders nothing in a Deployment, a Service or a Namespace: it changes how
+  # the delivery layer COMPARES, so it lives in the Application and has to be read there. Server-side
+  # apply and diff are what make taking over a live object possible; without them Argo compares
+  # against a client-side reconstruction, sees a diff that is mostly its own reconstruction, and for
+  # a workload holding a directory that diff is a stop-then-start rather than a rolling update.
+  gwA="$manifests/apps/Application-example-gateway-legacy.yaml"
+  shareA="$manifests/apps/Application-example-share.yaml"
+  syncA="$manifests/apps/Application-example-sync.yaml"
+  check "adopting: server-side apply" "ServerSideApply=true" "$(y '.spec.syncPolicy.syncOptions[0]' $gwA)"
+  check "adopting: server-side diff" "ServerSideDiff=true" \
+    "$(y '.metadata.annotations."argocd.argoproj.io/compare-options"' $gwA)"
+  # The other direction, and it is the half that catches a pass-through wired to a constant: a
+  # workload that adopts nothing must render NEITHER option -- absence, not an explicit false,
+  # because every Application this module renders for a cluster that has never run these apps has
+  # to stay exactly what it was before this term existed.
+  for f in $shareA $syncA; do
+    check "$(basename $f) asks for no server-side apply" "null" "$(y '.spec.syncPolicy.syncOptions' $f)"
+    check "$(basename $f) asks for no server-side diff" "null" \
+      "$(y '.metadata.annotations."argocd.argoproj.io/compare-options"' $f)"
+  done
+
   echo "== a deployment's own flag lands BEFORE the positional words the command line must end with =="
   # The whole point of splitting the catalogue's arguments in two. One appended list would produce
   # `... posix /data --cors-allow-origin https://example.com`, which is a different command line and

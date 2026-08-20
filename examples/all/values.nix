@@ -14,8 +14,9 @@
 #   - one that must not sleep, writing TWO directories with different answers to "may this be
 #     created empty", proving a required credential and rendering an init container out of its own
 #     image before the process starts -- and, because it is also the one whose command line ends in
-#     positional arguments, the one that shows where a deployment's own flag has to land, under a
-#     name its objects already carry rather than the one it is keyed by;
+#     positional arguments, the one that shows where a deployment's own flag has to land -- under a
+#     name its objects already carry rather than the one it is keyed by, and adopting them in place
+#     rather than being created, which is the only declaration here whose Application differs;
 #   - one that must not sleep either, in a namespace of its own, mixing a claim-backed directory
 #     with a node-path one and declaring ports on three protocols.
 {
@@ -57,6 +58,12 @@
     # gateway means the endpoint disappears while it happens. Keyed here by what it IS, rendered
     # under what it is CALLED.
     objectName = "example-gateway-legacy";
+
+    # AND THEY ARE ALREADY RUNNING, which is the other half of the same history: the rendered spec
+    # will not be byte-identical to whatever applied them, and a gateway holding a directory is
+    # stopped before it is restarted. Server-side apply and diff compare against what the API
+    # server actually holds, which is what makes taking the objects over possible at all.
+    adopt = true;
 
     # ONE ADDED FLAG, and the reason `trailingArgs` exists. The catalogue's own flags come first,
     # this lands next, and the positional `posix /data` the gateway reads off the end of argv stays

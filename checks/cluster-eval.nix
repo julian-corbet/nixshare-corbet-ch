@@ -164,6 +164,14 @@ let
       && !(apps ? example-gateway-legacy)
       && apps.example-share.name == "example-share";
 
+    # Whether an object is already in a cluster is that cluster's history, so it reaches the grammar
+    # from the DECLARATION and from nowhere else -- and it reaches it per workload, because one
+    # adopted gateway does not make the two apps beside it adopted too.
+    "adoption reaches the grammar for the workload that declares it, and for no other" =
+      gateway.adopt == true
+      && apps.example-share.adopt == false
+      && apps.example-sync.adopt == false;
+
     "what the process needs from the kernel comes from the catalogue, and an unestablished one renders nothing" =
       apps.example-share.security.allowPrivilegeEscalation == false
       && apps.example-share.security.capabilitiesDrop == [ "ALL" ]

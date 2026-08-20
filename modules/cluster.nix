@@ -183,7 +183,7 @@ let
   mkApp = x:
     let inherit (x) entry w; in
     {
-      inherit (w) namespace createNamespace project exposure scaling;
+      inherit (w) namespace createNamespace project exposure scaling adopt;
       image = imageOf entry w;
       ports = portsOf entry;
       state = stateOf entry w;
@@ -418,6 +418,30 @@ let
         it -- which for everything catalogued here means the thing stops while it happens. What a
         live object is called is one deployment's history, so this is a value and not knowledge:
         the catalogue never learns that somebody's gateway is called something else.
+      '';
+    };
+
+    adopt = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = ''
+        WHETHER THE RENDERED APPLICATION TAKES OVER OBJECTS THAT ALREADY EXIST, by asking the
+        delivery layer for server-side apply and server-side diff instead of comparing against a
+        client-side reconstruction of what is live. Defaults to false, which is what a workload
+        nothing has run yet wants.
+
+        IT IS A VALUE AND NOT KNOWLEDGE, for the same reason `objectName` is. Whether an object is
+        already in a cluster is that cluster's HISTORY -- applied by an addon, by hand, by a
+        manifest this declaration replaces -- and not a property of the software. The same
+        application is adopted on the cluster that has been running it and created from nothing on
+        the next one, and it differs here and nowhere else; the catalogue never learns either
+        answer.
+
+        IT SHRINKS THE DIFF, IT DOES NOT ERASE IT. A rendered spec is never byte-identical to the
+        YAML it replaces -- labels differ, fields this grammar sets appear, fields it does not set
+        disappear -- and for everything catalogued here durable state forces `Recreate`: the old
+        pod stops before the new one starts, so a diff is downtime rather than a rollout nobody
+        notices. Render it, diff it against what is live, and decide knowingly.
       '';
     };
 

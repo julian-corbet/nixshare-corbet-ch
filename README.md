@@ -593,10 +593,14 @@ A declaration holds the rest: how much cpu and memory this cluster is willing to
 give the workload (only those two — everything else a container can request is the
 name of something a particular cluster installed); the name its objects already
 carry, for a workload that predates the declaration and whose Deployment selector
-is immutable; and the variables a deployment adds around an application out of
-Secrets the catalogue knows nothing about — a tenant below a root credential, a
-reconciler's key — named one at a time rather than loaded wholesale. None of those
-is a fact about the software, so none of them is in the catalogue.
+is immutable; whether those objects are being *adopted* rather than created, which
+renders the Application with server-side apply and diff so Argo compares against
+what the API server actually holds; and the variables a deployment adds around an
+application out of Secrets the catalogue knows nothing about — a tenant below a
+root credential, a reconciler's key — named one at a time rather than loaded
+wholesale. None of those is a fact about the software, so none of them is in the
+catalogue: the same application is adopted on the cluster that has been running it
+and created from nothing on the next one.
 
 ## Non-goals (v1)
 
