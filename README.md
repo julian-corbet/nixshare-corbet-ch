@@ -471,6 +471,10 @@ same privilege level any ordinary `fstab`-driven mount runs at.
 | `modules/providers/fscache.nix` | Portable FS-Cache policy schema and package intent |
 | `modules/nixos/`, `modules/system-manager/` | Plane-specific native filesystem/cache implementations |
 | `pkgs/nixshare-watchdog.nix` | The watchdog script itself (real logic, see "How the watchdog works") |
+| `lib/applications.nix` | The cluster catalogue: what each byte-moving application IS, wherever anyone runs it |
+| `modules/cluster.nix` | The cluster translator — defines into `nixk3s.apps`, renders no Kubernetes object of its own |
+| `checks/` | The cluster surface's own checks: what it resolves, what it refuses, what it renders |
+| `examples/all/values.nix` | Placeholder values the render check evaluates against — nothing in it is real |
 | `experiments/` | Throwaway trials, dated Question/Hypothesis/Method/Status entries |
 | `studies/` | Write-ups that changed a decision |
 | `CONTRIBUTING.md` | The provider contract, concretely |
@@ -546,6 +550,34 @@ project's own tooling until it was fixed):
    rule; comparing raw mountpoint strings instead would report a hundred-plus
    phantom gaps on a correctly-configured host and refuse recovery forever.
 
+## Cluster applications
+
+The share modules above make somebody else's filesystem appear on this host. The
+other half of the same subject is a server that hands a filesystem *out* — a file
+someone is given a link to, a tree served as S3 objects, a folder another device
+reconciles against. `nixidyModules.nixshare` declares those, and they are the same
+subject rather than a second one: what they all have in common is doing something
+**to** bytes while being indifferent to what the bytes mean. Anything that reads
+its own content — a document store, a photo library, a wiki — belongs elsewhere.
+
+It is a **translator, not a renderer**. The app grammar in
+[nixk3s](https://github.com/julian-corbet/nixk3s-corbet-ch) already turns "an image,
+these ports, this exposure class, these directories" into an Argo CD Application, a
+Namespace, a Deployment and a Service. This module defines into that grammar and
+emits no Kubernetes object of its own; what it adds is the part the grammar cannot
+know — what these particular applications *are*.
+
+`lib/applications.nix` holds only what is true of the software wherever anyone runs
+it, and a declaration holds what is true of one cluster. Neither can supply the
+other's half, and that is enforced rather than trusted: the catalogue says *where*
+inside the container a directory lives and only a declaration can say what backs it;
+the catalogue says *which environment variable* a credential is read from and only a
+declaration can name the Secret. Whether a directory may be created empty is the
+catalogue's alone — that question has a silent wrong answer in both directions (an
+object gateway pointed at an empty backend reports every bucket as gone; a sync
+client pointed at an empty identity directory quietly becomes a different device),
+and it is a fact about the software rather than about anybody's cluster.
+
 ## Non-goals (v1)
 
 - **A resident watchdog daemon.** The watchdog is a systemd timer +
@@ -574,10 +606,11 @@ agnostic notification dispatch — nixshare's own intended pairing for
 watchdog alerts), and
 [nixram](https://github.com/julian-corbet/nixram-corbet-ch) (memory-
 pressure tuning by declared level), among others. nixshare's own niche is
-NFS/CIFS share management, both directions — client mounts +
-stuck-automount recovery, and server-side exports — usable alongside any
-of them, or standalone with a plain hostname/IP in `peer` and no alerting
-configured at all.
+making one filesystem reachable from somewhere else — client mounts +
+stuck-automount recovery, server-side NFS/CIFS exports, and the
+cluster-side applications that hand a tree out over some other protocol
+entirely — usable alongside any of them, or standalone with a plain
+hostname/IP in `peer` and no alerting configured at all.
 
 ## Status
 
@@ -589,6 +622,13 @@ watchdog with genuine stuck-attempt detection logic, real `services.nfs.server`/
 direct relocation of an already-running production module (see
 [Server-side exports](#server-side-exports)); the client-side providers
 have run across real hosts since their own introduction.
+The cluster surface is newer and is verified differently: it renders no
+manifest of its own, so what its checks prove is that it resolves through
+the real app grammar, that every guard it claims to make actually fires,
+and that the rendered bytes say what the catalogue says. Two of the three
+catalogued applications have their probe budgets read off running
+deployments; the third's come from the recipe that packaged it and are
+recorded as such in the catalogue rather than presented as measurements.
 `experiments/README.md` tracks every default and assumption that's
 reasoned, not yet measured, against a
 real deployment.

@@ -1,11 +1,36 @@
 {
   description = "Declarative NFS/CIFS share definitions whose server address resolves through nixnet peer names instead of hardcoded IPs, plus a watchdog that force-unmounts a stuck automount before it hangs the session.";
 
+  # THE HOST SIDE OF THIS FLAKE TAKES NOTHING, and that has not changed: `nixshare.shares` and the
+  # watchdog are options plus a package, taking `pkgs`/`config`/`lib` from whichever evaluation
+  # composes them, so a real host never puts a second nixpkgs -- or a sibling flake's whole input
+  # closure -- into its own closure. The two additions below are used by `checks` ALONE; nothing
+  # this flake exports reaches into either.
+  #
+  # They exist because the cluster module has to be evaluated by SOMETHING. `nix flake check`
+  # evaluates no module output on its own, so a cluster surface with no renderer to render it
+  # through would have been verified by nobody and passed on flake syntax alone.
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+
+    # The renderer the cluster module defines into.
+    nixidy = {
+      url = "github:arnarg/nixidy";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+
+    # THE APP GRAMMAR THIS REPOSITORY CONSUMES, and the point being proven rather than a shortcut:
+    # a consumer imports the grammar itself, and this input exists so the checks can render the
+    # cluster module through the REAL grammar and assert what comes out -- rather than asserting
+    # that a module which merely mentions `nixk3s.apps` evaluates.
+    nixk3s = {
+      url = "github:julian-corbet/nixk3s-corbet-ch";
+      inputs.nixpkgs.follows = "nixpkgs";
+      inputs.nixidy.follows = "nixidy";
+    };
   };
 
-  outputs = { self, nixpkgs }:
+  outputs = { self, nixpkgs, nixidy, nixk3s }:
     let
       lib = nixpkgs.lib;
       supportedSystems = [ "x86_64-linux" "aarch64-linux" ];
@@ -56,6 +81,24 @@
       systemManagerModules.nfs-provider = ./modules/system-manager/nfs.nix;
       systemManagerModules.cifs-provider = ./modules/system-manager/cifs.nix;
       systemManagerModules.fscache-provider = ./modules/system-manager/fscache.nix;
+
+      # ---------------------------------------------------------------
+      # The cluster plane: the same subject performed by a server
+      # instead of a mount. `nixshare.shares` makes somebody else's
+      # filesystem appear here; these applications hand a filesystem
+      # out -- as a link, as an S3 endpoint, as a peer another device
+      # reconciles against. It is a TRANSLATOR, not a renderer: it
+      # defines into `nixk3s.apps` and emits no Kubernetes object of
+      # its own, so the grammar owns every manifest and this repository
+      # owns only what these applications ARE. Import the grammar
+      # alongside it. Only one module in the class, so `.default` is
+      # honest rather than invented.
+      # ---------------------------------------------------------------
+      nixidyModules.nixshare = ./modules/cluster.nix;
+      nixidyModules.default = self.nixidyModules.nixshare;
+
+      # The catalogue, exposed so a consumer can inspect or validate it without re-reading the file.
+      lib.applications = (import ./lib/applications.nix { }).applications;
 
       packages = forAllSystems (system:
         let pkgs = pkgsFor system; in
@@ -419,6 +462,35 @@
               nixshare-health-reset-behavior-fixture
               touch "$out"
             '';
+        }
+        # ---------------------------------------------------------------
+        # The cluster half, x86_64-linux only and narrow ON PURPOSE. Both
+        # checks below build a real nixidy environment, so a declared
+        # platform that cannot be built here is a platform `nix flake
+        # check` skips while exiting 0 -- a check that passed having
+        # tested nothing. The host side above genuinely runs on both
+        # architectures and keeps them; narrow the claim rather than
+        # weaken the check.
+        # ---------------------------------------------------------------
+        // lib.optionalAttrs (system == "x86_64-linux") {
+          # The cluster module's own resolution and every guard it makes, in BOTH directions: an
+          # empty surface renders nothing, a declared one resolves, and each refusal gets a
+          # declaration that must be refused.
+          cluster-eval = import ./checks/cluster-eval.nix {
+            inherit pkgs lib nixidy;
+            appsModule = nixk3s.nixidyModules.apps;
+            clusterModule = self.nixidyModules.nixshare;
+            values = ./examples/all/values.nix;
+          };
+
+          # The manifests that actually come out, read back off the rendered bytes rather than off
+          # the options that produced them.
+          cluster-render = import ./checks/cluster-render.nix {
+            inherit pkgs lib nixidy;
+            appsModule = nixk3s.nixidyModules.apps;
+            clusterModule = self.nixidyModules.nixshare;
+            values = ./examples/all/values.nix;
+          };
         });
     };
 }
