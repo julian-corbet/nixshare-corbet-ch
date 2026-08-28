@@ -4,8 +4,8 @@
   # THE HOST SIDE OF THIS FLAKE TAKES NOTHING, and that has not changed: `nixshare.shares` and the
   # watchdog are options plus a package, taking `pkgs`/`config`/`lib` from whichever evaluation
   # composes them, so a real host never puts a second nixpkgs -- or a sibling flake's whole input
-  # closure -- into its own closure. The two additions below are used by `checks` ALONE; nothing
-  # this flake exports reaches into either.
+  # closure -- into its own closure. `nixidy` remains checks-only. The cluster export now closes
+  # over nixk3s' consumer factory, while still taking the composing evaluation's module arguments.
   #
   # They exist because the cluster module has to be evaluated by SOMETHING. `nix flake check`
   # evaluates no module output on its own, so a cluster surface with no renderer to render it
@@ -19,10 +19,8 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
 
-    # THE APP GRAMMAR THIS REPOSITORY CONSUMES, and the point being proven rather than a shortcut:
-    # a consumer imports the grammar itself, and this input exists so the checks can render the
-    # cluster module through the REAL grammar and assert what comes out -- rather than asserting
-    # that a module which merely mentions `nixk3s.apps` evaluates.
+    # THE APP GRAMMAR AND CONSUMER FACTORY THIS REPOSITORY CONSUMES. The checks render through the
+    # real grammar, and the exported cluster module is constructed by the matching factory.
     nixk3s = {
       url = "github:julian-corbet/nixk3s-corbet-ch";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -94,7 +92,9 @@
       # alongside it. Only one module in the class, so `.default` is
       # honest rather than invented.
       # ---------------------------------------------------------------
-      nixidyModules.nixshare = ./modules/cluster.nix;
+      nixidyModules.nixshare = import ./modules/cluster.nix {
+        mkConsumerModule = nixk3s.lib.mkConsumerModule;
+      };
       nixidyModules.default = self.nixidyModules.nixshare;
 
       # The catalogue, exposed so a consumer can inspect or validate it without re-reading the file.

@@ -43,10 +43,42 @@ let
     in
     r.success && r.value;
 
+  # Central guards should contribute one diagnostic, not one legacy copy plus one factory copy.
+  failsExactlyOnceWith = infix: v:
+    let
+      r = builtins.tryEval (lib.length (lib.filter
+        (a: !a.assertion && lib.hasInfix infix a.message)
+        (mkEnv v).config.nixidy.assertions));
+    in
+    r.success && r.value == 1;
+
   # A surface with nothing declared at all, to prove the module is inert until something asks.
   emptyCfg = (mkEnv {
     nixidy.target.repository = "https://example.com/example-org/example-gitops.git";
     nixidy.target.branch = "main";
+  }).config;
+
+  # The factory deliberately defaults neither cluster field. nixshare historically defaults both
+  # to its own name, so force that path with one otherwise-minimal application rather than relying
+  # on an empty surface not to evaluate the workload defaults at all.
+  defaultedCfg = (mkEnv {
+    nixidy.target.repository = "https://example.com/example-org/example-gitops.git";
+    nixidy.target.branch = "main";
+    nixshare.applications.defaulted = {
+      app = "pingvin";
+      version = "0.0.0";
+      state.data.hostPath = "/example/state/defaulted";
+    };
+  }).config;
+
+  parkedCfg = (mkEnv {
+    nixidy.target.repository = "https://example.com/example-org/example-gitops.git";
+    nixidy.target.branch = "main";
+    nixshare.applications.parked = {
+      enable = false;
+      app = "pingvin";
+      version = "0.0.0";
+    };
   }).config;
 
   goodCfg = (mkEnv base).config;
@@ -64,9 +96,38 @@ let
     "an undeclared surface renders no apps at all, rather than a default one" =
       emptyCfg.nixk3s.apps == { };
 
+    "the long-standing namespace and project defaults survive the factory boundary" =
+      defaultedCfg.nixshare.clusterPlatform.namespace == "nixshare"
+      && defaultedCfg.nixshare.clusterPlatform.project == "nixshare"
+      && defaultedCfg.nixk3s.apps.defaulted.namespace == "nixshare"
+      && defaultedCfg.nixk3s.apps.defaulted.project == "nixshare";
+
     "all three declared workloads reach the grammar" =
       lib.sort (a: b: a < b) (lib.attrNames apps)
       == [ "example-gateway" "example-share" "example-sync" ];
+
+    "the factory reports every application through the grammar and no application through another path" =
+      goodCfg.nixshare.renderedByGrammar
+      == [ "example-gateway" "example-share" "example-sync" ]
+      && goodCfg.nixshare.renderedDirectly == [ ]
+      && goodCfg.nixshare.notRendered == [ ];
+
+    "the clusterSlots report remains the exact declaration-keyed public projection" =
+      goodCfg.nixshare.clusterSlots
+      == { example-gateway = 41; example-share = 40; example-sync = 42; };
+
+    "an empty surface has empty factory reports as well as no rendered apps" =
+      emptyCfg.nixshare.clusterSlots == { }
+      && emptyCfg.nixshare.renderedByGrammar == [ ]
+      && emptyCfg.nixshare.renderedDirectly == [ ]
+      && emptyCfg.nixshare.notRendered == [ ];
+
+    "a parked declaration remains absent from apps, slots, and every render report" =
+      parkedCfg.nixk3s.apps == { }
+      && parkedCfg.nixshare.clusterSlots == { }
+      && parkedCfg.nixshare.renderedByGrammar == [ ]
+      && parkedCfg.nixshare.renderedDirectly == [ ]
+      && parkedCfg.nixshare.notRendered == [ ];
 
     # ── What the catalogue supplies, and what it refuses to ───────────────────────────────────
     "the catalogue supplies the ports, and no declaration states one" =
@@ -211,6 +272,28 @@ let
         };
       };
 
+    "the legacy state shape does not expose the factory's backing controls" =
+      !renders
+        (with' {
+          nixshare.applications.example-share.state.data.hostPathType = "DirectoryOrCreate";
+        });
+
+    "the legacy nested resource shape does not expose the factory's scalar resource controls" =
+      !renders
+        (with' { nixshare.applications.example-gateway.resources.cpuRequest = "50m"; });
+
+    "the legacy role-shaped credentials do not expose the factory's variable-shaped secret field" =
+      !renders
+        (with' { nixshare.applications.example-gateway.credentials.secret = "example-secret"; });
+
+    "factory-only workload terms are not added to the public nixshare schema" =
+      lib.all (v: !renders (with' v)) [
+        { nixshare.applications.example-share.replicas = 1; }
+        { nixshare.applications.example-share.harden = true; }
+        { nixshare.applications.example-share.publicUrl = "https://share.example.com"; }
+        { nixshare.applications.example-share.probes.readiness.periodSeconds = 30; }
+      ];
+
     # ── The guards, each with its message asserted ────────────────────────────────────────────
     "backing a directory the application does not write is refused" =
       failsWith "must back every directory it writes"
@@ -237,7 +320,7 @@ let
         (with' { nixshare.applications.example-gateway.envFromSecrets = [ "root" ]; });
 
     "two workloads anchoring one namespace is refused" =
-      failsWith "Exactly one workload may create a namespace"
+      failsExactlyOnceWith "Exactly one workload may create a namespace"
         (with' { nixshare.applications.example-gateway.createNamespace = true; });
 
     "naming one Secret in secretEnv and again as a credential is refused" =
@@ -259,7 +342,7 @@ let
         });
 
     "two workloads on one slot is refused" =
-      failsWith "is claimed by 2 applications"
+      failsExactlyOnceWith "slot 40 is claimed by 2 workloads"
         (with' { nixshare.applications.example-gateway.slot = 40; });
 
     # ── The scaling question this repository DOES have an answer to ──────────────────────────
@@ -278,7 +361,29 @@ let
     # legislating routing it cannot see.
     "scale-to-zero with no wake front warns rather than refuses" =
       let cfg = (mkEnv (with' { nixshare.applications.example-share.wake = lib.mkForce null; })).config;
-      in lib.any (w: w.when && lib.hasInfix "nothing brings it back" w.message) cfg.nixidy.warnings;
+      in lib.length
+        (lib.filter (w: w.when && lib.hasInfix "nothing brings it back" w.message) cfg.nixidy.warnings)
+        == 1;
+
+    # Slot is a common factory term now. Its warning keeps the same condition and consequence, but
+    # intentionally adopts the shared `workload` wording rather than retaining a second nixshare
+    # warning for the same declaration.
+    "the factory is the single slot-without-origin warning authority" =
+      lib.length
+        (lib.filter
+          (w:
+            w.when
+            && lib.hasInfix "nixshare: workload `example-share` claims slot 40" w.message
+            && lib.hasInfix "clusterPlatform.origin` is unset" w.message)
+          goodCfg.nixidy.warnings)
+      == 1;
+
+    "legacy image and resource shapes do not acquire the factory's generic warnings" =
+      !lib.any
+        (w:
+          lib.hasInfix "carries a whole image reference" w.message
+          || lib.hasInfix "asks for no CPU or memory" w.message)
+        goodCfg.nixidy.warnings;
   };
 
   failed = lib.filter (n: !results.${n}) (lib.attrNames results);
