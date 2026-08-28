@@ -381,8 +381,9 @@ let
     "legacy image and resource shapes do not acquire the factory's generic warnings" =
       !lib.any
         (w:
-          lib.hasInfix "carries a whole image reference" w.message
-          || lib.hasInfix "asks for no CPU or memory" w.message)
+          w.when
+          && (lib.hasInfix "carries a whole image reference" w.message
+            || lib.hasInfix "asks for no CPU or memory" w.message))
         goodCfg.nixidy.warnings;
   };
 
