@@ -65,6 +65,14 @@ consuming host. The public module may require an absolute cache directory and
 validate daemon watermarks, but must not assume a particular filesystem or
 layout.
 
+## Contributor agreement
+
+By submitting a contribution, you agree to the
+[Individual Contributor License Agreement](https://github.com/corbet-labs/.github/blob/cla-v1.0/CLA.md).
+Include this exact affirmation in your pull request description:
+
+> I have read and agree to version 1.0 of the Individual Contributor License Agreement at https://github.com/corbet-labs/.github/blob/cla-v1.0/CLA.md.
+
 ## License
 
 MIT — same as the rest of the repo.
