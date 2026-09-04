@@ -279,7 +279,8 @@
             && lib.elem "cachefilesd" clientEval.config.nixshare.aurPackages
             && clientEval.config.boot.supportedFilesystems ? nfs
             && clientEval.config.boot.supportedFilesystems ? cifs
-            && clientEval.config.services.cachefilesd.enable;
+            && clientEval.config.services.cachefilesd.enable
+            && clientEval.config.nixshare.health.recovery == "alert";
 
           # Nix's flake schema only checks that systemManagerModules are
           # functions. This evaluation runs their actual Arch-facing unit
@@ -372,6 +373,14 @@
               ${builtins.readFile ./tests/nixshare-health-reset-fixture.sh}
             '';
           };
+          healthRestoreBehaviorFixture = pkgs.writeShellApplication {
+            name = "nixshare-health-restore-behavior-fixture";
+            runtimeInputs = [ pkgs.coreutils ];
+            text = ''
+              ${builtins.readFile ./pkgs/nixshare-health-restore.sh}
+              ${builtins.readFile ./tests/nixshare-health-restore-fixture.sh}
+            '';
+          };
         in
         {
           nixshare-sharenfs-injection-guard =
@@ -452,14 +461,25 @@
                 echo "rendered nixshare-health still recursively stats the mountpoint listing" >&2
                 exit 1
               fi
+              if grep -F 'systemctl restart "$(unit_for "$mp")"' \
+                ${healthPackage}/bin/nixshare-health >/dev/null; then
+                echo "rendered nixshare-health still directly restarts mount units" >&2
+                exit 1
+              fi
+              if ! grep -F "trap 'exit 143' TERM" \
+                ${healthPackage}/bin/nixshare-health >/dev/null; then
+                echo "rendered nixshare-health can continue teardown after TERM" >&2
+                exit 1
+              fi
               touch "$out"
             '';
 
           nixshare-health-reset-behavior = pkgs.runCommand
             "nixshare-health-reset-behavior"
-            { nativeBuildInputs = [ healthResetBehaviorFixture ]; }
+            { nativeBuildInputs = [ healthResetBehaviorFixture healthRestoreBehaviorFixture ]; }
             ''
               nixshare-health-reset-behavior-fixture
+              nixshare-health-restore-behavior-fixture
               touch "$out"
             '';
         }

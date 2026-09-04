@@ -388,27 +388,15 @@ writeShellApplication {
     teardown_cachefilesd=no
     teardown_file=""
 
-    restore_torn_down() {
-      [ "''${#teardown_mps[@]}" -gt 0 ] || return 0
-      echo "nixshare-health: restoring ''${#teardown_mps[@]} mount(s) torn down by recovery"
-      local mp
-      for mp in "''${teardown_mps[@]}"; do
-        systemctl start "$(unit_for "$mp")" 2>/dev/null || true
-      done
-      for mp in "''${teardown_mps[@]}"; do
-        systemctl start "$(automount_for "$mp")" 2>/dev/null || true
-      done
-      if [ "$teardown_cachefilesd" = yes ]; then
-        systemctl start cachefilesd 2>/dev/null || true
-      fi
-      teardown_mps=()
-      teardown_cachefilesd=no
-      [ -n "''${teardown_file:-}" ] && rm -f "$teardown_file"
-      teardown_file=""
-      return 0
-    }
+    ${builtins.readFile ./nixshare-health-restore.sh}
 
-    trap restore_torn_down EXIT INT TERM
+    # TERM/INT must EXIT after restoration.  A signal trap which merely calls
+    # restore_torn_down and returns lets the interrupted teardown continue,
+    # clears its marker, and can strand a later-stopped mount with no recovery
+    # record.  EXIT owns the one restoration path for every termination mode.
+    trap 'restore_torn_down || true' EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
 
     # SIGKILL cannot be trapped, and neither can an OOM kill or a crash. So
     # the armed list is also written to disk before the first stop and removed
@@ -417,23 +405,6 @@ writeShellApplication {
     # else. Self-healing on the next tick, with no systemd machinery needed.
     # (A reboot needs no handling -- stateDir is tmpfs and the automounts come
     # back on their own.)
-    recover_orphaned_teardowns() {
-      local f mp
-      for f in "$state_dir"/teardown.*; do
-        [ -e "$f" ] || continue
-        echo "nixshare-health: found an interrupted teardown ($f) -- restoring its mounts first" >&2
-        while read -r mp; do
-          case "$mp" in
-            "") continue ;;
-            "CACHEFILESD") systemctl start cachefilesd 2>/dev/null || true ;;
-            *) systemctl start "$(unit_for "$mp")" 2>/dev/null || true
-               systemctl start "$(automount_for "$mp")" 2>/dev/null || true ;;
-          esac
-        done < "$f"
-        rm -f "$f"
-      done
-    }
-
     # ONE instance at a time. systemd already merges overlapping timer jobs,
     # but a hand-run `nixshare-health` during a timer tick has no such
     # protection -- and two concurrent recoveries tearing down the same peer
@@ -445,7 +416,10 @@ writeShellApplication {
       exit 0
     fi
 
-    recover_orphaned_teardowns
+    if ! recover_orphaned_teardowns; then
+      echo "nixshare-health: interrupted teardown is not fully restored; refusing to probe or recover anything else" >&2
+      exit 1
+    fi
 
     if [ "$heal_only" = yes ]; then
       echo "nixshare-health: --heal-only, nothing further to do"
@@ -545,40 +519,34 @@ writeShellApplication {
         continue
       fi
 
-      notify "$peer degraded (worst ''${worst}ms$marker) -- attempting recovery=$recovery"
+      # The module schema permits only alert/reset-client, but refuse closed
+      # if this executable is pointed at a stale or hand-written config.  An
+      # unknown value must never be interpreted as permission to tear down a
+      # whole NFS client.
+      if [ "$recovery" != "reset-client" ]; then
+        notify "$peer degraded (worst ''${worst}ms$marker), but recovery='$recovery' is unsupported. Taking no action."
+        echo "$now" > "$cure_file"
+        continue
+      fi
+
+      if [ "$protocol" != "nfs" ]; then
+        notify "$peer degraded (worst ''${worst}ms$marker), but recovery=reset-client is NFS-only (protocol=$protocol). Taking no action."
+        echo "$now" > "$cure_file"
+        continue
+      fi
+
+      notify "$peer degraded (worst ''${worst}ms$marker) -- attempting opt-in recovery=reset-client"
       echo "$now" > "$cure_file"
 
-      # --- Step 1: remount just this peer's shares -----------------------
-      # Cheapest thing that could work, and it IS enough when the stall is
-      # in a single mount's own state rather than the shared client.
+      # Destroy and rebuild the whole nfs_client.  There is deliberately no
+      # preliminary `systemctl restart ...mount`: it cannot replace a client
+      # shared by every mount of the peer, and the stop/start gap can remove
+      # the path without first arming the crash-safe restore guarantee.
       mapfile -t mps < <(jq -r ".peers[$pi].shares[].mountpoint" "$config_file")
-      for mp in "''${mps[@]}"; do
-        systemctl restart "$(unit_for "$mp")" 2>/dev/null || true
-      done
 
-      sleep 2
-      recheck=0
-      for mp in "''${mps[@]}"; do
-        ms=$(probe_ms "$mp") || ms=$(( probe_timeout * 1000 ))
-        [ "$ms" -gt "$degraded_ms" ] && recheck=$(( recheck + 1 ))
-      done
-
-      if [ "$recheck" -eq 0 ]; then
-        notify "$peer recovered after remount."
-        rm -f "$fail_file"
-        continue
-      fi
-
-      if [ "$recovery" != "reset-client" ] || [ "$protocol" != "nfs" ]; then
-        notify "$peer STILL degraded after remount, and recovery=$recovery (protocol=$protocol) permits nothing further. Manual intervention needed."
-        continue
-      fi
-
-      # --- Step 2: destroy and rebuild the whole nfs_client --------------
-      # The step that actually works, and the reason this tool groups by
-      # peer. Every mount of this server must go, AND the fscache cookies
-      # pinning the client must be released, or the refcount never reaches
-      # zero and the rebuilt mounts reattach to the same wedged client.
+      # Every mount of this server must go, AND the fscache cookies pinning
+      # the client must be released, or the refcount never reaches zero and
+      # the rebuilt mounts reattach to the same wedged client.
       # REFUSE, do not merely warn. Every mount of this server shares one
       # nfs_client, so a mount nixshare does not know about holds its refcount
       # above zero and the reset cannot destroy it. Proceeding anyway would
@@ -649,9 +617,14 @@ writeShellApplication {
         reset_incomplete="$nfs_teardown_state"
       fi
 
-      # Same code path the trap uses, so the normal and the interrupted case
-      # can never drift apart. Clears the armed state on success.
-      restore_torn_down
+      # Same code path the trap and orphan replay use, so the normal and
+      # interrupted cases cannot drift apart.  Failure retains the marker
+      # and aborts this tick; probing through a half-restored set would risk
+      # compounding the outage.
+      if ! restore_torn_down; then
+        notify "$peer RESTORE INCOMPLETE after nfs_client reset attempt. The teardown marker was retained for ExecStopPost and the next health tick; refusing further recovery."
+        exit 1
+      fi
 
       if [ -n "$reset_incomplete" ]; then
         notify "$peer RESET INCOMPLETE [$reset_incomplete] after waiting ''${reset_teardown_timeout}s for kernel teardown. Mounts were restored, but the old client was not proven destroyed; this run is not a complete nfs_client reset. Open references or retained kernel transports require manual intervention."
@@ -680,7 +653,7 @@ writeShellApplication {
   '';
 
   meta = with lib; {
-    description = "Detect and cure a degraded-but-mounted NFS client (a wedged SUNRPC transport, or a hang confined to READDIRPLUS), which the stuck-automount watchdog cannot see";
+    description = "Detect and optionally recover a degraded-but-mounted NFS client (a wedged SUNRPC transport, or a hang confined to READDIRPLUS), which the stuck-automount watchdog cannot see";
     license = licenses.mit;
     platforms = platforms.linux;
   };

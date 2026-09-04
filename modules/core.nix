@@ -447,9 +447,10 @@ in
           Run the mount-health monitor. On by default for the same reason
           the watchdog is: an unattended client that silently degrades to
           seconds-per-RPC is exactly the failure this project exists to
-          keep off the user's session. It only ever acts on a mount that is
-          already `active`, only after `consecutiveFailures` sustained bad
-          probes, and only when the server is provably reachable.
+          keep off the user's session. Recovery is alert-only by default;
+          when explicitly enabled, it only ever acts on a mount that is
+          already `active`, after `consecutiveFailures` sustained bad probes,
+          and when the server is provably reachable.
         '';
       };
 
@@ -520,26 +521,24 @@ in
       };
 
       recovery = mkOption {
-        type = types.enum [ "alert" "remount" "reset-client" ];
-        default = "reset-client";
+        type = types.enum [ "alert" "reset-client" ];
+        default = "alert";
         description = ''
           How far recovery may escalate.
 
           `alert`        : report only, change nothing.
-          `remount`      : restart the peer's own mount units, and stop there.
-          `reset-client` : if a remount did not help, additionally destroy
-                           and rebuild the shared NFS client -- stop every
-                           mount AND automount of that peer, release the
-                           fscache cookies pinning it (stop cachefilesd,
-                           unload `cachefiles`), then bring it all back.
+          `reset-client` : explicitly opt into destroying and rebuilding the
+                           shared NFS client -- stop every mount AND automount
+                           of that peer, release the fscache cookies pinning it
+                           (stop cachefilesd, unload `cachefiles`), then bring
+                           it all back.
 
-          The default is the strongest because the weaker ones do not
-          actually cure the failure being targeted: a wedged `nfs_client` is
-          shared per SERVER, so remounting one share reattaches to the same
-          broken client and changes nothing (confirmed by hand during the
-          incident in pkgs/nixshare-health.nix's header). `reset-client`
-          only ever runs on `protocol = "nfs"`, and never when the server is
-          unreachable.
+          The safe default is alert-only. A wedged `nfs_client` is shared per
+          SERVER, so restarting one mount reattaches to the same client and
+          does not cure it; worse, a failed direct restart can leave the path
+          without its automount trigger. The disruptive whole-client reset is
+          therefore explicit, NFS-only, and never attempted while the server
+          is unreachable.
         '';
       };
 
@@ -668,7 +667,7 @@ in
     };
 
     systemd.services.nixshare-health = mkIf cfg.health.enable {
-      description = "nixshare health: detect and cure a degraded-but-mounted NFS client";
+      description = "nixshare health: detect a degraded-but-mounted NFS client and optionally recover it";
       serviceConfig = {
         Type = "oneshot";
         ExecStart = "${cfg.health.package}/bin/nixshare-health";

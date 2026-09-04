@@ -237,9 +237,12 @@ timer, and escalates only on a sustained stall:
    mountpoint. If the server is down this **alerts and stops**: tearing down
    mounts would achieve nothing except fighting the automount that is trying
    to re-establish them.
-4. **Cure**, bounded by `recovery`:
-   `alert` → report only · `remount` → restart that peer's mount units ·
-   `reset-client` → if a remount did not help, rebuild the shared NFS client.
+4. **Respond**, bounded by `recovery`:
+   `alert` (the default) reports only. `reset-client` is an explicit NFS-only
+   opt-in which rebuilds the shared NFS client. There is no direct mount-unit
+   restart stage: restarting one share cannot replace the peer-wide client,
+   and a failed restart can remove the mount without first restoring its
+   automount trigger.
 
 ### Why recovery is grouped by peer, not by share
 
@@ -263,10 +266,14 @@ calls that path a complete client reset. That is why the config is rendered
 as peer groups rather than a flat share list: a per-share view makes the only
 effective cure unexpressible.
 
-`reset-client` only ever runs for `protocol = "nfs"`, only after a plain
-remount has already been tried and failed, and never when the server is
-unreachable. `cooldownSec` bounds how often it may run, so a cure that
-does not help degrades into an alert rather than a teardown loop.
+`reset-client` only ever runs for `protocol = "nfs"`, only when explicitly
+configured, and never when the server is unreachable. Restoration starts
+every automount before attempting any mount, and an on-disk teardown marker
+is retained until every requested unit has started successfully. The same
+routine handles normal completion, signals, `ExecStopPost`, and orphaned
+markers from a killed process. `cooldownSec` bounds how often a reset may run,
+so a cure that does not help degrades into an alert rather than a teardown
+loop.
 
 **This has a hard prerequisite, and the monitor checks it for you.** Because
 the client is shared per server, `reset-client` can only destroy it if
@@ -326,6 +333,9 @@ them would have made recovery impossible while looking like it ran.
 - `health.probeUser` — optional local identity for read-only health probes;
   needed for non-world-readable NFS roots behind `root_squash`. Recovery
   remains root.
+- `health.recovery` (default `"alert"`) — alert without mutation, or explicitly
+  opt into the NFS-only `"reset-client"` teardown. There is deliberately no
+  per-mount restart mode: it cannot replace the peer-wide NFS client.
 - `health.resetTeardownTimeoutSec` (default `30`) — bounded wait between
   force-lazy-unmount and remount during `reset-client`. Completion requires
   the target NFS client, its volumes, and live TCP/2049 transports to vanish;
