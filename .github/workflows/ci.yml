@@ -32,12 +32,10 @@ jobs:
       # exactly backwards: the point of a per-system matrix is that each system reports its own
       # result, including when a sibling is broken.
       fail-fast: false
-      matrix:
-        include:
-          - system: x86_64-linux
-            runner: ubuntu-latest
-          - system: aarch64-linux
-            runner: ubuntu-24.04-arm
+      # Routine native ARM stays hosted; Crow handles x86 Linux.
+      matrix: >-
+        ${{ fromJSON((github.event_name == 'workflow_dispatch' || github.event_name == 'release' || startsWith(github.ref, 'refs/tags/')) && '{"include":[{"system":"x86_64-linux","runner":"ubuntu-latest"},{"system":"aarch64-linux","runner":"ubuntu-24.04-arm"}]}' || '{"include":[{"system":"aarch64-linux","runner":"ubuntu-24.04-arm"}]}') }}
+
     steps:
       - uses: actions/checkout@v4
       - uses: cachix/install-nix-action@v27
@@ -69,6 +67,8 @@ jobs:
   # matrix above still gets evaluated here, and an eval error in it fails this job, instead of
   # sailing through unexamined behind an omission warning nobody reads.
   eval-all-systems:
+    # Crow runs this portable gate; retain hosted manual/tag/release fallback.
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'release' || startsWith(github.ref, 'refs/tags/') }}
     name: every declared system evaluates
     runs-on: ubuntu-latest
     timeout-minutes: 10
