@@ -22,7 +22,7 @@
     # THE APP GRAMMAR AND CONSUMER FACTORY THIS REPOSITORY CONSUMES. The checks render through the
     # real grammar, and the exported cluster module is constructed by the matching factory.
     nixk3s = {
-      url = "github:julian-corbet/nixk3s-corbet-ch";
+      url = "git+https://github.com/julian-corbet/nixk3s-corbet-ch";
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.nixidy.follows = "nixidy";
     };
